@@ -1,0 +1,6 @@
+{
+  "name": "Smart Hisab — স্মার্ট হিসাব",
+  "description": "গার্মেন্টস সুইং মেশিন অপারেটরদের জন্য প্রোডাকশন ও ব্যক্তিগত আর্থিক হিসাব ব্যবস্থাপনা অ্যাপ্লিকেশন।",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
