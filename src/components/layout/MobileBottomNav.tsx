@@ -102,7 +102,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
               </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {NAVIGATION_ITEMS.map((item) => {
                 const isActive = activeModule === item.id;
                 return (
@@ -110,7 +110,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                     key={item.id}
                     type="button"
                     onClick={() => handleModuleSelect(item.id)}
-                    className={`min-h-[54px] p-3 rounded-2xl border text-left flex items-center gap-3 transition-colors cursor-pointer ${
+                    className={`min-h-[50px] p-3 rounded-2xl border text-left flex items-center gap-3 transition-colors cursor-pointer ${
                       isActive
                         ? 'border-teal-600 bg-teal-50/80 dark:bg-teal-950/60 text-teal-900 dark:text-teal-200 font-semibold'
                         : 'border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'

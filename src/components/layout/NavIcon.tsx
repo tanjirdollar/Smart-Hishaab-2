@@ -3,8 +3,10 @@ import {
   ArrowLeftRight,
   Banknote,
   BarChart3,
+  CalendarRange,
   ClipboardCheck,
   Database,
+  FileSpreadsheet,
   HandCoins,
   LayoutDashboard,
   PiggyBank,
@@ -24,6 +26,10 @@ export const NavIcon: React.FC<NavIconProps> = ({ name, className = 'w-5 h-5' })
       return <LayoutDashboard className={className} />;
     case 'Scissors':
       return <Scissors className={className} />;
+    case 'CalendarRange':
+      return <CalendarRange className={className} />;
+    case 'FileSpreadsheet':
+      return <FileSpreadsheet className={className} />;
     case 'ClipboardCheck':
       return <ClipboardCheck className={className} />;
     case 'Banknote':

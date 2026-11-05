@@ -9,50 +9,237 @@ import {
   WageLedgerRecord,
   WeeklyEarningsPoint,
 } from '../types/models';
+import {
+  dateObjToDDMMYYYY,
+  parseAnyDateToDateObj,
+} from '../utils/formatters';
+import {
+  BENGALI_MONTH_NAMES,
+  computeSaturdayToThursdayWeekSummary,
+} from '../utils/weeklyCalendar';
 
 /**
  * Financial & Production Domain Service Layer
  *
- * Centralizes data structures and Supabase repository contracts outside presentation components.
- * In Phase 1 (Initial Foundation), no fake financial math or localStorage persistence is executed.
- * All structures are typed and ready to bind directly to Supabase PostgreSQL queries in Phase 2.
+ * Centralizes accounting calculations and Saturday-to-Thursday weekly reporting
+ * from actual records (never hardcoded in presentation components).
  */
 
-export function getInitialDashboardMetrics(): DashboardSummaryMetrics {
+export interface ApplicationRepositoryState {
+  productionEntries: ProductionEntry[];
+  wageRecords: WageLedgerRecord[];
+  paymentWithdrawals: PaymentWithdrawalRecord[];
+  loanRecords: LoanRecord[];
+  fundRecords: FundRecord[];
+  incomeExpenseRecords: IncomeExpenseRecord[];
+}
+
+export function getInitialRepositoryState(): ApplicationRepositoryState {
   return {
-    todayEarnedWages: null,
-    weekEarnedWages: null,
-    monthEarnedWages: null,
-    totalOutstandingWages: null,
-    totalWeeklyWithdrawals: null,
-    totalPersonalExpenses: null,
-    totalLoanReceivable: null,
-    totalLoanPayable: null,
-    totalFundBalance: null,
+    productionEntries: [],
+    wageRecords: [],
+    paymentWithdrawals: [],
+    loanRecords: [],
+    fundRecords: [],
+    incomeExpenseRecords: [],
   };
 }
 
-export function getWeeklyChartTemplate(): WeeklyEarningsPoint[] {
-  return [
-    { dayLabel: 'শনিবার', dateLabel: '—', earnedAmount: null },
-    { dayLabel: 'রবিবার', dateLabel: '—', earnedAmount: null },
-    { dayLabel: 'সোমবার', dateLabel: '—', earnedAmount: null },
-    { dayLabel: 'মঙ্গলবার', dateLabel: '—', earnedAmount: null },
-    { dayLabel: 'বুধবার', dateLabel: '—', earnedAmount: null },
-    { dayLabel: 'বৃহস্পতিবার', dateLabel: '—', earnedAmount: null },
-    { dayLabel: 'শুক্রবার', dateLabel: '—', earnedAmount: null },
-  ];
+/**
+ * Computes all Dashboard metrics accurately from actual repository records,
+ * enforcing the Saturday-to-Thursday working week and distinguishing:
+ * 1. Earned Wage
+ * 2. Received Wage
+ * 3. Outstanding Wage
+ * 4. Advance Balance
+ */
+export function computeDashboardMetrics(
+  repo: ApplicationRepositoryState,
+  now: Date = new Date()
+): DashboardSummaryMetrics {
+  const todayStr = dateObjToDDMMYYYY(now);
+  const currentMonth = now.getMonth();
+  const currentYear = now.getFullYear();
+
+  // Today's earned wages
+  const todayEarnedWages = Number(
+    repo.productionEntries
+      .filter((e) => {
+        const dt = parseAnyDateToDateObj(e.date);
+        return dt && dateObjToDDMMYYYY(dt) === todayStr;
+      })
+      .reduce((sum, e) => sum + (e.totalWage ?? 0), 0)
+      .toFixed(2)
+  );
+
+  // Current Saturday-to-Thursday week summary
+  const currentWeekSummary = computeSaturdayToThursdayWeekSummary(
+    now,
+    repo.productionEntries,
+    repo.paymentWithdrawals
+  );
+
+  // This month's earned wages
+  const monthEarnedWages = Number(
+    repo.productionEntries
+      .filter((e) => {
+        const dt = parseAnyDateToDateObj(e.date);
+        return (
+          dt &&
+          dt.getFullYear() === currentYear &&
+          dt.getMonth() === currentMonth
+        );
+      })
+      .reduce((sum, e) => sum + (e.totalWage ?? 0), 0)
+      .toFixed(2)
+  );
+
+  // Total Earned vs Received across all production entries & wage periods (no double counting)
+  const allProdEarned = repo.productionEntries.reduce(
+    (sum, e) => sum + (e.totalWage ?? 0),
+    0
+  );
+  const allProdReceived = repo.productionEntries.reduce((sum, e) => {
+    if (e.receivedWage !== null && e.receivedWage !== undefined && e.receivedWage > 0) {
+      return sum + e.receivedWage;
+    }
+    if (e.settlementStatus === 'settled') {
+      return sum + (e.totalWage ?? 0);
+    }
+    return sum;
+  }, 0);
+
+  const wageTableOutstanding = repo.wageRecords.reduce(
+    (sum, w) => sum + (w.outstandingWage ?? 0),
+    0
+  );
+
+  const totalWithdrawals = repo.paymentWithdrawals.reduce(
+    (sum, w) => sum + (w.amount ?? 0),
+    0
+  );
+
+  const prodNetOutstanding = Math.max(
+    0,
+    allProdEarned - (allProdReceived + totalWithdrawals)
+  );
+  const totalOutstandingWages = Number(
+    (prodNetOutstanding + wageTableOutstanding).toFixed(2)
+  );
+
+  const totalPersonalExpenses = Number(
+    repo.incomeExpenseRecords
+      .filter((tx) => tx.transactionType === 'expense')
+      .reduce((sum, tx) => sum + (tx.amount ?? 0), 0)
+      .toFixed(2)
+  );
+
+  const totalLoanReceivable = Number(
+    repo.loanRecords
+      .filter((l) => l.loanDirection === 'receivable')
+      .reduce((sum, l) => sum + (l.remainingBalance ?? l.principalAmount ?? 0), 0)
+      .toFixed(2)
+  );
+
+  const totalLoanPayable = Number(
+    repo.loanRecords
+      .filter((l) => l.loanDirection === 'payable')
+      .reduce((sum, l) => sum + (l.remainingBalance ?? l.principalAmount ?? 0), 0)
+      .toFixed(2)
+  );
+
+  const totalFundBalance = Number(
+    repo.fundRecords
+      .reduce((sum, f) => sum + (f.currentBalance ?? 0), 0)
+      .toFixed(2)
+  );
+
+  return {
+    todayEarnedWages,
+    weekEarnedWages: currentWeekSummary.totalEarnedWages,
+    monthEarnedWages,
+    totalOutstandingWages,
+    totalWeeklyWithdrawals: currentWeekSummary.totalReceivedWages,
+    totalPersonalExpenses,
+    totalLoanReceivable,
+    totalLoanPayable,
+    totalFundBalance,
+    thisWeekTotalPieces: currentWeekSummary.totalPieces,
+    thisWeekTotalDozens: currentWeekSummary.totalDozens,
+    thisWeekReceivedWages: currentWeekSummary.totalReceivedWages,
+    thisWeekOutstandingWages: currentWeekSummary.totalOutstandingWages,
+    thisWeekAdvanceBalance: currentWeekSummary.advanceBalance,
+    thisWeekWorkingDays: currentWeekSummary.workingDaysCount,
+  };
 }
 
-export function getMonthlyChartTemplate(): MonthlyIncomeExpensePoint[] {
-  return [
-    { monthLabel: 'জানুয়ারি', incomeAmount: null, expenseAmount: null },
-    { monthLabel: 'ফেব্রুয়ারি', incomeAmount: null, expenseAmount: null },
-    { monthLabel: 'মার্চ', incomeAmount: null, expenseAmount: null },
-    { monthLabel: 'এপ্রিল', incomeAmount: null, expenseAmount: null },
-    { monthLabel: 'মে', incomeAmount: null, expenseAmount: null },
-    { monthLabel: 'জুন', incomeAmount: null, expenseAmount: null },
-  ];
+/**
+ * Computes current week's Saturday-to-Thursday daily series from actual entries.
+ */
+export function computeCurrentWeekSeries(
+  repo: ApplicationRepositoryState,
+  now: Date = new Date()
+): WeeklyEarningsPoint[] {
+  return computeSaturdayToThursdayWeekSummary(
+    now,
+    repo.productionEntries,
+    repo.paymentWithdrawals
+  ).dailyBreakdown;
+}
+
+/**
+ * Computes last 6 months income & expense series from actual records.
+ */
+export function computeMonthlyIncomeExpenseSeries(
+  repo: ApplicationRepositoryState,
+  now: Date = new Date()
+): MonthlyIncomeExpensePoint[] {
+  const points: MonthlyIncomeExpensePoint[] = [];
+
+  for (let i = 5; i >= 0; i--) {
+    const dt = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const m = dt.getMonth();
+    const y = dt.getFullYear();
+
+    const prodEarnedInMonth = repo.productionEntries
+      .filter((e) => {
+        const parsed = parseAnyDateToDateObj(e.date);
+        return parsed && parsed.getFullYear() === y && parsed.getMonth() === m;
+      })
+      .reduce((sum, e) => sum + (e.totalWage ?? 0), 0);
+
+    const txIncomeInMonth = repo.incomeExpenseRecords
+      .filter((tx) => {
+        const parsed = parseAnyDateToDateObj(tx.date);
+        return (
+          tx.transactionType === 'income' &&
+          parsed &&
+          parsed.getFullYear() === y &&
+          parsed.getMonth() === m
+        );
+      })
+      .reduce((sum, tx) => sum + (tx.amount ?? 0), 0);
+
+    const txExpenseInMonth = repo.incomeExpenseRecords
+      .filter((tx) => {
+        const parsed = parseAnyDateToDateObj(tx.date);
+        return (
+          tx.transactionType === 'expense' &&
+          parsed &&
+          parsed.getFullYear() === y &&
+          parsed.getMonth() === m
+        );
+      })
+      .reduce((sum, tx) => sum + (tx.amount ?? 0), 0);
+
+    points.push({
+      monthLabel: BENGALI_MONTH_NAMES[m],
+      incomeAmount: Number((prodEarnedInMonth + txIncomeInMonth).toFixed(2)),
+      expenseAmount: Number(txExpenseInMonth.toFixed(2)),
+    });
+  }
+
+  return points;
 }
 
 export interface SupabaseTableBlueprint {
@@ -66,24 +253,34 @@ export interface SupabaseTableBlueprint {
 export const SUPABASE_SCHEMA_BLUEPRINTS: SupabaseTableBlueprint[] = [
   {
     tableName: 'production_entries',
-    titleBn: 'প্রোডাকশন হিসাব টেবিল',
-    purposeBn: 'দৈনিক সেলাইকৃত পোশাকের ধরন, সাইজ, রঙ, ডজন, পিস, দর ও ছবির লিংক সংরক্ষণ',
+    titleBn: 'প্রোডাকশন হিসাব টেবিল (উন্নত সংস্করণ)',
+    purposeBn:
+      'আইটেমের নাম, ক্যাটাগরি, সাইজ, রঙ, পিস, ডজন, ঐতিহাসিক দর, কাজের শুরু/শেষ সময় এবং স্বাধীন পরিশোধ স্ট্যাটাস সংরক্ষণ',
     columns: [
       'id (uuid, PK)',
       'user_id (uuid, FK -> auth.users)',
       'entry_date (date)',
-      'garment_type (text)',
-      'size (text)',
-      'color (text)',
-      'dozens (numeric)',
+      'item_name (text)',
+      'category (text)',
+      'sizes (text[])',
+      'colors (text[])',
       'pieces (integer)',
+      'dozens (numeric)',
       'rate_per_dozen (numeric)',
       'total_wage (numeric)',
+      'received_wage (numeric)',
+      'pending_wage (numeric)',
+      'work_status (in_progress | completed)',
+      'settlement_status (pending | settled)',
+      'start_work_time (timestamptz)',
+      'end_work_time (timestamptz)',
+      'work_duration_minutes (integer)',
       'short_description (text)',
       'photo_urls (text[])',
-      'created_at (timestamptz)',
+      'import_batch_id (text)',
     ],
-    rlsPolicyBn: 'শুধুমাত্র লগইনকৃত অপারেটর নিজের প্রোডাকশন তথ্য দেখতে ও পরিবর্তন করতে পারবেন (auth.uid() = user_id)',
+    rlsPolicyBn:
+      'শুধুমাত্র লগইনকৃত অপারেটর নিজের প্রোডাকশন তথ্য দেখতে ও পরিবর্তন করতে পারবেন (auth.uid() = user_id)',
   },
   {
     tableName: 'wage_periods',
@@ -167,23 +364,3 @@ export const SUPABASE_SCHEMA_BLUEPRINTS: SupabaseTableBlueprint[] = [
     rlsPolicyBn: 'অপারেটর ভিত্তিক Row Level Security (RLS) সুরক্ষিত',
   },
 ];
-
-export interface ApplicationRepositoryState {
-  productionEntries: ProductionEntry[];
-  wageRecords: WageLedgerRecord[];
-  paymentWithdrawals: PaymentWithdrawalRecord[];
-  loanRecords: LoanRecord[];
-  fundRecords: FundRecord[];
-  incomeExpenseRecords: IncomeExpenseRecord[];
-}
-
-export function getInitialRepositoryState(): ApplicationRepositoryState {
-  return {
-    productionEntries: [],
-    wageRecords: [],
-    paymentWithdrawals: [],
-    loanRecords: [],
-    fundRecords: [],
-    incomeExpenseRecords: [],
-  };
-}

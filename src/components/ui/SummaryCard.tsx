@@ -29,28 +29,28 @@ export const SummaryCard: React.FC<SummaryCardProps> = ({
   tone = 'default',
 }) => {
   return (
-    <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 transition-colors">
-      <div className="flex items-start justify-between gap-3">
+    <div className="w-full max-w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5 sm:p-5 transition-colors overflow-hidden">
+      <div className="flex items-start justify-between gap-2.5 sm:gap-3">
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400 leading-snug">
+          <p className="text-xs sm:text-sm font-medium text-slate-600 dark:text-slate-400 leading-snug break-words">
             {titleBn}
           </p>
-          <p className="mt-2 text-2xl sm:text-[26px] font-bold tracking-tight text-slate-900 dark:text-slate-100 font-mono tabular-nums">
+          <p className="mt-1.5 sm:mt-2 text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100 font-mono tabular-nums break-words">
             {customValueBn !== undefined ? customValueBn : formatTaka(amount, true)}
           </p>
         </div>
         <div
-          className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${ICON_CONTAINER_STYLES[tone]}`}
+          className={`w-10 h-10 sm:w-11 sm:h-11 rounded-xl flex items-center justify-center shrink-0 ${ICON_CONTAINER_STYLES[tone]}`}
           aria-hidden="true"
         >
           {icon}
         </div>
       </div>
 
-      <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
-        <span className="truncate">{subtitleBn}</span>
+      <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+        <span className="truncate min-w-0 flex-1">{subtitleBn}</span>
         {dbColumnHint && (
-          <span className="font-mono text-[11px] text-slate-400 dark:text-slate-500 shrink-0">
+          <span className="hidden sm:inline font-mono text-[11px] text-slate-400 dark:text-slate-500 shrink-0">
             {dbColumnHint}
           </span>
         )}

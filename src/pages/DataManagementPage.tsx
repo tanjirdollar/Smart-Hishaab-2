@@ -26,9 +26,10 @@ export const DataManagementPage: React.FC<DataManagementPageProps> = ({
   const handleExportStructureJson = () => {
     const schemaPayload = {
       appName: 'Smart Hisab — স্মার্ট হিসাব',
-      phase: 'Phase 1 Architecture Foundation',
+      phase: 'Phase 2 Enhanced Production, Weekly Report & Import',
       currency: 'BDT (৳)',
       dateFormat: 'DD-MM-YYYY',
+      weeklyCalendar: 'Saturday to Thursday (Friday excluded)',
       supabaseConfigured: supabaseState.isConfigured,
       storageBucket: supabaseState.storageBucket,
       tables: SUPABASE_SCHEMA_BLUEPRINTS,
@@ -46,11 +47,11 @@ export const DataManagementPage: React.FC<DataManagementPageProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
       <PageHeader
-        moduleIndexBn="০৯. বিশ্লেষণ ও সিস্টেম · ডেটা ম্যানেজমেন্ট"
+        moduleIndexBn="১১. বিশ্লেষণ ও সিস্টেম · ডেটা ম্যানেজমেন্ট"
         titleBn="ডেটা ম্যানেজমেন্ট ও সুপাবেস ডাটাবেস আর্কিটেকচার"
-        subtitleBn="সুপাবেস (Supabase) ক্লাউড ডাটাবেস, অথেনটিকেশন এবং ফটো স্টোরেজ বাকেটের কাঠামো ও ডেটা ব্যবস্থাপনা"
+        subtitleBn="সুপাবেস (Supabase) ক্লাউড ডাটাবেস, মাইগ্রেশন স্ক্রিপ্ট, অথেনটিকেশন এবং ফটো স্টোরেজ বাকেটের কাঠামো"
         primaryActionLabelBn="স্কিমা ব্লুপ্রিন্ট ডাউনলোড (JSON)"
         primaryActionIcon={<HardDriveDownload className="w-4 h-4" />}
         onPrimaryAction={handleExportStructureJson}

@@ -8,6 +8,8 @@ export interface NavigationItem {
   iconName:
     | 'LayoutDashboard'
     | 'Scissors'
+    | 'CalendarRange'
+    | 'FileSpreadsheet'
     | 'ClipboardCheck'
     | 'Banknote'
     | 'HandCoins'
@@ -24,7 +26,7 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
     id: ModuleId.DASHBOARD,
     labelBn: 'ড্যাশবোর্ড',
     shortLabelBn: 'ড্যাশবোর্ড',
-    descriptionBn: 'দৈনিক, সাপ্তাহিক ও মাসিক প্রোডাকশন এবং আর্থিক হিসাবের সারসংক্ষেপ',
+    descriptionBn: 'দৈনিক ও সাপ্তাহিক (শনিবার-বৃহস্পতিবার) প্রোডাকশন এবং আর্থিক হিসাবের সারসংক্ষেপ',
     iconName: 'LayoutDashboard',
     groupBn: 'প্রধান মডিউল',
   },
@@ -32,8 +34,24 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
     id: ModuleId.PRODUCTION,
     labelBn: 'প্রোডাকশন হিসাব',
     shortLabelBn: 'প্রোডাকশন',
-    descriptionBn: 'প্রতিদিনের সেলাইকৃত পোশাকের ডজন, পিস, দর এবং ছবির পূর্ণাঙ্গ খতিয়ান',
+    descriptionBn: 'প্রতিদিনের সেলাইকৃত পোশাক, কাজের শুরু/শেষ সময়, স্ট্যাটাস এবং মজুরির পূর্ণাঙ্গ খতিয়ান',
     iconName: 'Scissors',
+    groupBn: 'প্রধান মডিউল',
+  },
+  {
+    id: ModuleId.WEEKLY_REPORT,
+    labelBn: 'সাপ্তাহিক রিপোর্ট (শনি-বৃহঃ)',
+    shortLabelBn: 'সাপ্তাহিক',
+    descriptionBn: 'শনিবার থেকে বৃহস্পতিবার পর্যন্ত সাপ্তাহিক প্রোডাকশন রিপোর্ট ও বহু-সপ্তাহের তুলনামূলক চার্ট',
+    iconName: 'CalendarRange',
+    groupBn: 'প্রধান মডিউল',
+  },
+  {
+    id: ModuleId.IMPORT_DATA,
+    labelBn: 'ডেটা ইমপোর্ট (Sheets/Excel)',
+    shortLabelBn: 'ইমপোর্ট',
+    descriptionBn: 'Google Sheets, Excel (XLSX) বা CSV ফাইল থেকে পূর্ববর্তী প্রোডাকশন ও হিসাব ইমপোর্ট',
+    iconName: 'FileSpreadsheet',
     groupBn: 'প্রধান মডিউল',
   },
   {
@@ -88,7 +106,7 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
     id: ModuleId.DATA_MANAGEMENT,
     labelBn: 'ডেটা ম্যানেজমেন্ট',
     shortLabelBn: 'ডেটা',
-    descriptionBn: 'সুপাবেস ক্লাউড ডাটাবেস কাঠামো, ব্যাকআপ এবং এক্সপোর্ট ব্যবস্থাপনা',
+    descriptionBn: 'সুপাবেস ক্লাউড ডাটাবেস কাঠামো, মাইগ্রেশন এবং এক্সপোর্ট ব্যবস্থাপনা',
     iconName: 'Database',
     groupBn: 'বিশ্লেষণ ও সিস্টেম',
   },
@@ -105,21 +123,33 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
 export const MOBILE_PRIMARY_NAV_IDS: ModuleId[] = [
   ModuleId.DASHBOARD,
   ModuleId.PRODUCTION,
-  ModuleId.WAGES,
-  ModuleId.INCOME_EXPENSE,
+  ModuleId.WEEKLY_REPORT,
+  ModuleId.IMPORT_DATA,
 ];
 
-export const GARMENT_TYPE_OPTIONS: string[] = [
-  'টি-শার্ট (T-Shirt)',
-  'পোলো শার্ট (Polo Shirt)',
-  'ওভেন শার্ট (Woven Shirt)',
-  'ডেনিম প্যান্ট (Denim Pant)',
-  'গ্যাবার্ডিন প্যান্ট (Gabardine Pant)',
-  'ট্রাউজার / জগার্স (Trouser / Joggers)',
-  'হুডি / জ্যাকেট (Hoodie / Jacket)',
-  'লেডিস টপস / কুর্তি (Ladies Tops)',
+export const GARMENT_ITEM_NAME_OPTIONS: string[] = [
+  'টি-শার্ট বডি জয়েন্ট (T-Shirt Body)',
+  'পোলো শার্ট প্লাকেট ও কলার (Polo Shirt)',
+  'ওভেন শার্ট কলার ও কাফ (Woven Shirt)',
+  'ডেনিম প্যান্ট সাইড ও ইনসিম (Denim Pant)',
+  'গ্যাবার্ডিন প্যান্ট পকেট ও জিপার (Gabardine Pant)',
+  'ট্রাউজার / জগার্স ইলাস্টিক ও হ্যাম (Trouser / Joggers)',
+  'হুডি / জ্যাকেট স্লিভ ও জিপার (Hoodie / Jacket)',
+  'লেডিস কুর্তি / টপস (Ladies Tops)',
   'শিশুদের পোশাক (Kids Wear)',
 ];
+
+export const GARMENT_CATEGORY_OPTIONS: string[] = [
+  'নিটওয়্যার (Knitwear)',
+  'ওভেন (Woven)',
+  'ডেনিম (Denim)',
+  'আউটারওয়্যার / জ্যাকেট (Outerwear)',
+  'স্পোর্টসওয়্যার (Sportswear)',
+  'কিডসওয়্যার (Kidswear)',
+  'লেডিস ফ্যাশন (Ladies Wear)',
+];
+
+export const GARMENT_TYPE_OPTIONS: string[] = GARMENT_ITEM_NAME_OPTIONS;
 
 export const GARMENT_SIZE_OPTIONS: string[] = [
   'XS',
