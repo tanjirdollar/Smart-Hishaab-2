@@ -127,39 +127,29 @@ export const MOBILE_PRIMARY_NAV_IDS: ModuleId[] = [
   ModuleId.IMPORT_DATA,
 ];
 
-export const GARMENT_ITEM_NAME_OPTIONS: string[] = [
-  'টি-শার্ট বডি জয়েন্ট (T-Shirt Body)',
-  'পোলো শার্ট প্লাকেট ও কলার (Polo Shirt)',
-  'ওভেন শার্ট কলার ও কাফ (Woven Shirt)',
-  'ডেনিম প্যান্ট সাইড ও ইনসিম (Denim Pant)',
-  'গ্যাবার্ডিন প্যান্ট পকেট ও জিপার (Gabardine Pant)',
-  'ট্রাউজার / জগার্স ইলাস্টিক ও হ্যাম (Trouser / Joggers)',
-  'হুডি / জ্যাকেট স্লিভ ও জিপার (Hoodie / Jacket)',
-  'লেডিস কুর্তি / টপস (Ladies Tops)',
-  'শিশুদের পোশাক (Kids Wear)',
-];
+export const GARMENT_ITEM_NAME_OPTIONS: string[] = [];
 
 export const GARMENT_CATEGORY_OPTIONS: string[] = [
-  'নিটওয়্যার (Knitwear)',
-  'ওভেন (Woven)',
-  'ডেনিম (Denim)',
-  'আউটারওয়্যার / জ্যাকেট (Outerwear)',
-  'স্পোর্টসওয়্যার (Sportswear)',
-  'কিডসওয়্যার (Kidswear)',
-  'লেডিস ফ্যাশন (Ladies Wear)',
+  'কটি',
+  'গোলগোলা',
+  'শার্ট',
+  'প্যান্ট',
 ];
 
-export const GARMENT_TYPE_OPTIONS: string[] = GARMENT_ITEM_NAME_OPTIONS;
+export const GARMENT_TYPE_OPTIONS: string[] = GARMENT_CATEGORY_OPTIONS;
 
 export const GARMENT_SIZE_OPTIONS: string[] = [
-  'XS',
-  'S',
-  'M',
-  'L',
-  'XL',
-  'XXL',
-  '3XL',
-  '২৮-৩৬ (প্যান্ট)',
+  '১৪',
+  '১৬',
+  '১৮',
+  '২০',
+  '২২',
+  '২৪',
+  '২৬',
+  '২৮',
+  '৩০',
+  '৩১',
+  '৩২',
 ];
 
 export const GARMENT_COLOR_OPTIONS: string[] = [

@@ -5,11 +5,13 @@ import {
   Edit3,
   FilePlus2,
   Layers,
+  Mic,
   Play,
   Plus,
   RotateCcw,
   Scissors,
   Search,
+  Sparkles,
   Square,
   Trash2,
   Wallet,
@@ -17,9 +19,9 @@ import {
 import {
   GARMENT_CATEGORY_OPTIONS,
   GARMENT_COLOR_OPTIONS,
-  GARMENT_ITEM_NAME_OPTIONS,
   GARMENT_SIZE_OPTIONS,
 } from '../config/navigation';
+import { ExtractedVoiceProductionData } from '../services/voiceEntryService';
 import {
   ProductionEntry,
   ProductionFilterState,
@@ -43,6 +45,8 @@ import {
   toBengaliDigits,
   toDateTimeLocalInputValue,
 } from '../utils/formatters';
+import { AiVoiceEntryModal } from '../components/ui/AiVoiceEntryModal';
+import { AnalogClockTimePicker } from '../components/ui/AnalogClockTimePicker';
 import { EmptyDataState } from '../components/ui/EmptyDataState';
 import {
   DateInputDDMMYYYY,
@@ -57,24 +61,24 @@ import { SummaryCard } from '../components/ui/SummaryCard';
 
 export interface ProductionLedgerPageProps {
   entries: ProductionEntry[];
-  onSaveEntry: (entry: ProductionEntry, rawFiles?: File[]) => void;
-  onDeleteEntry: (id: string) => void;
+  onSaveEntry: (
+    entry: ProductionEntry,
+    rawFiles?: File[]
+  ) => Promise<{ persistedToCloud: boolean; errorBn: string | null }>;
+  onDeleteEntry: (id: string) => Promise<void> | void;
 }
 
 interface ProductionFormDraft {
   id: string | null;
   date: string;
-  itemName: string;
-  customItemName: string;
-  category: string;
-  customCategory: string;
-  selectedSizes: string[];
-  customSizeInput: string;
+  itemName: string; // Pure user-entered text input, empty by default
+  category: string; // One of the 4 preset categories ('কটি' | 'গোলগোলা' | 'শার্ট' | 'প্যান্ট'), empty by default
+  selectedSizes: string[]; // Selected from the 11 preset sizes, empty by default
   selectedColors: string[];
   customColorInput: string;
   pieces: string;
+  dozensInput: string;
   ratePerDozen: string;
-  receivedWage: string;
   workStatus: WorkStatus;
   settlementStatus: SettlementStatus;
   startWorkTime: string;
@@ -88,17 +92,14 @@ function createEmptyDraft(): ProductionFormDraft {
   return {
     id: null,
     date: getTodayDDMMYYYY(false),
-    itemName: GARMENT_ITEM_NAME_OPTIONS[0],
-    customItemName: '',
-    category: GARMENT_CATEGORY_OPTIONS[0],
-    customCategory: '',
-    selectedSizes: ['M'],
-    customSizeInput: '',
-    selectedColors: [GARMENT_COLOR_OPTIONS[0]],
+    itemName: '',
+    category: '',
+    selectedSizes: [],
+    selectedColors: [],
     customColorInput: '',
     pieces: '',
+    dozensInput: '',
     ratePerDozen: '',
-    receivedWage: '',
     workStatus: 'in_progress',
     settlementStatus: 'pending',
     startWorkTime: '',
@@ -111,9 +112,12 @@ function createEmptyDraft(): ProductionFormDraft {
 
 /**
  * Visual status styles according to requirements:
- * - In Progress: Blue
- * - Completed but wage Pending: Soft Amber/Orange
- * - Wage Settled: Soft Green
+ * - Work Status:
+ *   - কাজ চলছে (Blue)
+ *   - কাজ সম্পন্ন
+ * - Rate Settlement Status:
+ *   - রেট নিষ্পত্তি হয়নি (Amber / Orange)
+ *   - নিষ্পত্তি হয়েছে (Green)
  */
 function getEntryVisualCardStyle(entry: ProductionEntry): {
   cardBorderBg: string;
@@ -123,21 +127,21 @@ function getEntryVisualCardStyle(entry: ProductionEntry): {
   settlementTextColor: string;
 } {
   const isWorkCompleted = entry.workStatus === 'completed';
-  const isWageSettled = entry.settlementStatus === 'settled';
+  const isRateSettled = entry.settlementStatus === 'settled';
 
-  const workLabelBn = isWorkCompleted ? 'কাজ সম্পন্ন (Completed)' : 'কাজ চলমান (In Progress)';
+  const workLabelBn = isWorkCompleted ? 'কাজ সম্পন্ন' : 'কাজ চলছে';
   const workTextColor = isWorkCompleted
-    ? 'text-amber-700 dark:text-amber-300'
+    ? 'text-slate-700 dark:text-slate-300'
     : 'text-sky-700 dark:text-sky-300';
 
-  const settlementLabelBn = isWageSettled
-    ? 'মজুরি পরিশোধিত (Settled)'
-    : 'মজুরি বকেয়া (Pending)';
-  const settlementTextColor = isWageSettled
+  const settlementLabelBn = isRateSettled
+    ? 'নিষ্পত্তি হয়েছে'
+    : 'রেট নিষ্পত্তি হয়নি';
+  const settlementTextColor = isRateSettled
     ? 'text-emerald-700 dark:text-emerald-300'
     : 'text-amber-700 dark:text-amber-300';
 
-  if (isWageSettled) {
+  if (isRateSettled) {
     return {
       cardBorderBg:
         'border-emerald-200 dark:border-emerald-800/80 bg-emerald-50/35 dark:bg-emerald-950/25',
@@ -151,12 +155,12 @@ function getEntryVisualCardStyle(entry: ProductionEntry): {
   }
 
   if (isWorkCompleted) {
-    // Completed but wage Pending -> Soft Amber/Orange
+    // Completed but Rate Pending -> Soft Amber/Orange
     return {
       cardBorderBg:
         'border-amber-200 dark:border-amber-800/80 bg-amber-50/40 dark:bg-amber-950/25',
       workLabelBn,
-      workTextColor,
+      workTextColor: 'text-amber-700 dark:text-amber-300',
       settlementLabelBn,
       settlementTextColor,
     };
@@ -190,17 +194,19 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
     settlementStatus: 'ALL',
   });
 
-  const [availableSizes, setAvailableSizes] = useState<string[]>(GARMENT_SIZE_OPTIONS);
-  const [availableColors, setAvailableColors] = useState<string[]>(GARMENT_COLOR_OPTIONS);
+  const [availableColors, setAvailableColors] =
+    useState<string[]>(GARMENT_COLOR_OPTIONS);
 
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [showInlineForm, setShowInlineForm] = useState(false);
+  const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
   const [draft, setDraft] = useState<ProductionFormDraft>(createEmptyDraft);
+  const [isSaving, setIsSaving] = useState(false);
   const [formErrorBn, setFormErrorBn] = useState<string | null>(null);
   const [statusBannerBn, setStatusBannerBn] = useState<string | null>(null);
 
-  // Automatic calculation in Section C:
-  // Dozens = Pieces / 12
+  // Automatic calculation:
+  // Dozens = Pieces / 12 (or Pieces = Dozens * 12)
   // Earned Wage = Dozens × Rate per Dozen
   const parsedPieces = useMemo(() => {
     const clean = toAsciiDigits(draft.pieces).trim();
@@ -229,48 +235,128 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
     [draft.startWorkTime, draft.endWorkTime]
   );
 
+  const handlePiecesChange = (val: string) => {
+    const clean = toAsciiDigits(val).trim();
+    const num = Number(clean);
+    const nextDozens =
+      clean && Number.isFinite(num) && num >= 0
+        ? String(calculateDozensFromPieces(Math.round(num)))
+        : '';
+    setDraft((prev) => ({
+      ...prev,
+      pieces: val,
+      dozensInput: nextDozens,
+    }));
+  };
+
+  const handleDozensChange = (val: string) => {
+    const clean = toAsciiDigits(val).trim();
+    const num = Number(clean);
+    const nextPieces =
+      clean && Number.isFinite(num) && num >= 0
+        ? String(Math.round(num * 12))
+        : '';
+    setDraft((prev) => ({
+      ...prev,
+      dozensInput: val,
+      pieces: nextPieces,
+    }));
+  };
+
   const handleOpenAddModal = () => {
     setFormErrorBn(null);
     setDraft(createEmptyDraft());
     setIsFormModalOpen(true);
   };
 
+  const handleOpenVoiceEntry = () => {
+    setFormErrorBn(null);
+    setIsVoiceModalOpen(true);
+  };
+
+  const handleApplyVoiceDataToForm = (extracted: ExtractedVoiceProductionData) => {
+    setDraft((prev) => {
+      const nextPieces =
+        extracted.pieces !== null && extracted.pieces > 0
+          ? String(extracted.pieces)
+          : prev.pieces;
+      const nextDozens =
+        extracted.dozens !== null && extracted.dozens > 0
+          ? String(extracted.dozens)
+          : prev.dozensInput;
+
+      return {
+        ...prev,
+        date: extracted.date || prev.date || getTodayDDMMYYYY(false),
+        itemName: extracted.itemName || prev.itemName,
+        category: extracted.category || prev.category,
+        selectedSizes:
+          extracted.sizes.length > 0 ? extracted.sizes : prev.selectedSizes,
+        selectedColors: extracted.color
+          ? [extracted.color]
+          : prev.selectedColors,
+        pieces: nextPieces,
+        dozensInput: nextDozens,
+        ratePerDozen:
+          extracted.ratePerDozen !== null && extracted.ratePerDozen > 0
+            ? String(extracted.ratePerDozen)
+            : prev.ratePerDozen,
+        shortDescription:
+          extracted.notes ||
+          prev.shortDescription ||
+          (extracted.transcript ? `ভয়েস নোট: ${extracted.transcript}` : ''),
+      };
+    });
+
+    if (!isFormModalOpen && !showInlineForm) {
+      setIsFormModalOpen(true);
+    }
+
+    setStatusBannerBn(
+      extracted.missingFieldsBn.length > 0
+        ? `ভয়েস থেকে তথ্য ফর্মে বসানো হয়েছে। অনুগ্রহ করে অনুপস্থিত তথ্য (${extracted.missingFieldsBn.join(
+            ', '
+          )}) যাচাই করে "সংরক্ষণ করুন" বাটনে ট্যাপ করুন।`
+        : 'ভয়েস থেকে সকল প্রোডাকশন তথ্য সফলভাবে ফর্মে বসানো হয়েছে। যাচাই করে "সংরক্ষণ করুন" বাটনে ট্যাপ করুন।'
+    );
+  };
+
   const handleOpenEditModal = (entry: ProductionEntry) => {
     setFormErrorBn(null);
     const sizesList =
       entry.sizes && entry.sizes.length > 0
-        ? entry.sizes
+        ? entry.sizes.map((s) => toBengaliDigits(s.trim()))
         : entry.size
-        ? entry.size.split(',').map((s) => s.trim()).filter(Boolean)
-        : ['M'];
+        ? entry.size
+            .split(',')
+            .map((s) => toBengaliDigits(s.trim()))
+            .filter(Boolean)
+        : [];
     const colorsList =
       entry.colors && entry.colors.length > 0
         ? entry.colors
         : entry.color
-        ? entry.color.split(',').map((c) => c.trim()).filter(Boolean)
-        : [GARMENT_COLOR_OPTIONS[0]];
+        ? entry.color
+            .split(',')
+            .map((c) => c.trim())
+            .filter(Boolean)
+        : [];
 
-    // Ensure custom sizes/colors from edited entry are available in options
-    setAvailableSizes((prev) => Array.from(new Set([...prev, ...sizesList])));
-    setAvailableColors((prev) => Array.from(new Set([...prev, ...colorsList])));
-
-    const isKnownItem = GARMENT_ITEM_NAME_OPTIONS.includes(entry.itemName);
-    const isKnownCat = GARMENT_CATEGORY_OPTIONS.includes(entry.category);
+    if (colorsList.length > 0) {
+      setAvailableColors((prev) => Array.from(new Set([...prev, ...colorsList])));
+    }
 
     setDraft({
       id: entry.id,
       date: entry.date,
-      itemName: isKnownItem ? entry.itemName : 'CUSTOM',
-      customItemName: isKnownItem ? '' : entry.itemName,
-      category: isKnownCat ? entry.category : 'CUSTOM',
-      customCategory: isKnownCat ? '' : entry.category,
+      itemName: entry.itemName || '',
+      category: entry.category || '',
       selectedSizes: sizesList,
-      customSizeInput: '',
       selectedColors: colorsList,
       customColorInput: '',
       pieces: entry.pieces !== null ? String(entry.pieces) : '',
+      dozensInput: entry.dozens !== null ? String(entry.dozens) : '',
       ratePerDozen: entry.ratePerDozen !== null ? String(entry.ratePerDozen) : '',
-      receivedWage: entry.receivedWage !== null ? String(entry.receivedWage) : '',
       workStatus: entry.workStatus ?? 'in_progress',
       settlementStatus: entry.settlementStatus ?? 'pending',
       startWorkTime: toDateTimeLocalInputValue(entry.startWorkTime),
@@ -282,7 +368,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
     setIsFormModalOpen(true);
   };
 
-  // Form Section B: Toggle multi-size & custom size
+  // Toggle multi-size from the 11 preset sizes
   const toggleSizeSelection = (sizeVal: string) => {
     setDraft((prev) => {
       const exists = prev.selectedSizes.includes(sizeVal);
@@ -291,22 +377,9 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         : [...prev.selectedSizes, sizeVal];
       return {
         ...prev,
-        selectedSizes: next.length > 0 ? next : [sizeVal],
+        selectedSizes: next,
       };
     });
-  };
-
-  const handleAddCustomSize = () => {
-    const val = draft.customSizeInput.trim();
-    if (!val) return;
-    if (!availableSizes.includes(val)) {
-      setAvailableSizes((prev) => [...prev, val]);
-    }
-    setDraft((prev) => ({
-      ...prev,
-      selectedSizes: Array.from(new Set([...prev.selectedSizes, val])),
-      customSizeInput: '',
-    }));
   };
 
   const toggleColorSelection = (colorVal: string) => {
@@ -317,7 +390,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         : [...prev.selectedColors, colorVal];
       return {
         ...prev,
-        selectedColors: next.length > 0 ? next : [colorVal],
+        selectedColors: next,
       };
     });
   };
@@ -361,13 +434,13 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       ...prev,
       endWorkTime: nowStr,
       workStatus: 'completed',
-      // Note: Do NOT automatically mark wages as Settled when work is Completed!
+      // Do NOT automatically mark rate settlement as settled when work is completed!
     }));
     setFormErrorBn(null);
   };
 
-  // Direct Start Work / End Work / Settlement toggle on existing Production History entries
-  const handleQuickStartWorkOnEntry = (entry: ProductionEntry) => {
+  // Direct Start Work / End Work / Rate Settlement toggle on existing Production History entries
+  const handleQuickStartWorkOnEntry = async (entry: ProductionEntry) => {
     const nowStr = getNowLocalDateTimeInput();
     const updated: ProductionEntry = {
       ...entry,
@@ -375,13 +448,15 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       workStatus: 'in_progress',
       workDurationMinutes: calculateDurationMinutes(nowStr, entry.endWorkTime),
     };
-    onSaveEntry(updated);
+    const res = await onSaveEntry(updated);
     setStatusBannerBn(
-      `"${entry.itemName}" এর কাজ শুরু হয়েছে (${formatWorkTimestampBn(nowStr)}) — স্ট্যাটাস: কাজ চলমান।`
+      res.errorBn
+        ? res.errorBn
+        : `"${entry.itemName}" এর কাজ শুরু হয়েছে (${formatWorkTimestampBn(nowStr)}) — কাজের অবস্থা: কাজ চলছে।`
     );
   };
 
-  const handleQuickEndWorkOnEntry = (entry: ProductionEntry) => {
+  const handleQuickEndWorkOnEntry = async (entry: ProductionEntry) => {
     const nowStr = getNowLocalDateTimeInput();
     const startRef = entry.startWorkTime || nowStr;
     const duration = calculateDurationMinutes(startRef, nowStr);
@@ -397,15 +472,16 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       endWorkTime: nowStr,
       workStatus: 'completed',
       workDurationMinutes: duration ?? 0,
-      // Keep settlementStatus completely unchanged!
     };
-    onSaveEntry(updated);
+    const res = await onSaveEntry(updated);
     setStatusBannerBn(
-      `"${entry.itemName}" এর কাজ সম্পন্ন হয়েছে (${formatWorkTimestampBn(nowStr)})। মজুরি পরিশোধের অবস্থা অপরিবর্তিত রয়েছে।`
+      res.errorBn
+        ? res.errorBn
+        : `"${entry.itemName}" এর কাজ সম্পন্ন হয়েছে (${formatWorkTimestampBn(nowStr)})। রেট নিষ্পত্তি স্ট্যাটাস অপরিবর্তিত রয়েছে।`
     );
   };
 
-  const handleQuickToggleSettlementOnEntry = (entry: ProductionEntry) => {
+  const handleQuickToggleSettlementOnEntry = async (entry: ProductionEntry) => {
     const nextSettlement: SettlementStatus =
       entry.settlementStatus === 'settled' ? 'pending' : 'settled';
     const earned = entry.totalWage ?? 0;
@@ -415,11 +491,13 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       receivedWage: nextSettlement === 'settled' ? earned : 0,
       pendingWage: nextSettlement === 'settled' ? 0 : earned,
     };
-    onSaveEntry(updated);
+    const res = await onSaveEntry(updated);
     setStatusBannerBn(
-      nextSettlement === 'settled'
-        ? `"${entry.itemName}" এর মজুরি পরিশোধিত (Settled) হিসেবে চিহ্নিত হয়েছে।`
-        : `"${entry.itemName}" এর মজুরি বকেয়া (Pending) হিসেবে চিহ্নিত হয়েছে।`
+      res.errorBn
+        ? res.errorBn
+        : nextSettlement === 'settled'
+        ? `"${entry.itemName}" এর রেট নিষ্পত্তি স্ট্যাটাস "নিষ্পত্তি হয়েছে" হিসেবে সংরক্ষিত হয়েছে।`
+        : `"${entry.itemName}" এর রেট নিষ্পত্তি স্ট্যাটাস "রেট নিষ্পত্তি হয়নি" হিসেবে সংরক্ষিত হয়েছে।`
     );
   };
 
@@ -446,9 +524,31 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
     }));
   };
 
-  const handleSubmitForm = (e: React.FormEvent) => {
+  const handleSubmitForm = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
     setFormErrorBn(null);
+
+    const finalItemName = draft.itemName.trim();
+    if (!finalItemName) {
+      setFormErrorBn('অনুগ্রহ করে আইটেমের নাম লিখুন (যেমন: বাচ্চাদের গোলগোলা, হাফ হাতা শার্ট)।');
+      return;
+    }
+
+    if (!draft.category) {
+      setFormErrorBn('অনুগ্রহ করে ৪টি অপশন (কটি, গোলগোলা, শার্ট, প্যান্ট) থেকে একটি ক্যাটাগরি নির্বাচন করুন।');
+      return;
+    }
+
+    if (draft.selectedSizes.length === 0) {
+      setFormErrorBn('অনুগ্রহ করে অন্তত একটি সাইজ (১৪–৩২) নির্বাচন করুন।');
+      return;
+    }
+
+    if (parsedPieces <= 0) {
+      setFormErrorBn('অনুগ্রহ করে পিস অথবা ডজন সংখ্যা প্রদান করুন।');
+      return;
+    }
 
     if (draft.startWorkTime && draft.endWorkTime) {
       const dur = calculateDurationMinutes(draft.startWorkTime, draft.endWorkTime);
@@ -460,38 +560,18 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       }
     }
 
-    const finalItemName =
-      draft.itemName === 'CUSTOM'
-        ? draft.customItemName.trim() || 'পোশাক আইটেম'
-        : draft.itemName;
-    const finalCategory =
-      draft.category === 'CUSTOM'
-        ? draft.customCategory.trim() || 'সাধারণ ক্যাটাগরি'
-        : draft.category;
-
-    const cleanRecWage = toAsciiDigits(draft.receivedWage).trim();
-    const explicitReceived =
-      cleanRecWage && Number.isFinite(Number(cleanRecWage))
-        ? Number(cleanRecWage)
-        : draft.settlementStatus === 'settled'
-        ? calculatedEarnedWage
-        : 0;
-
     const finalSettlementStatus: SettlementStatus = draft.settlementStatus;
     const finalReceivedWage =
-      finalSettlementStatus === 'settled' && explicitReceived === 0
-        ? calculatedEarnedWage
-        : explicitReceived;
-    const finalPendingWage = Number(
-      Math.max(0, calculatedEarnedWage - finalReceivedWage).toFixed(2)
-    );
+      finalSettlementStatus === 'settled' ? calculatedEarnedWage : 0;
+    const finalPendingWage =
+      finalSettlementStatus === 'settled' ? 0 : calculatedEarnedWage;
 
     const record: ProductionEntry = {
       id: draft.id ?? `prod-${Date.now()}`,
       date: draft.date || getTodayDDMMYYYY(false),
       itemName: finalItemName,
-      category: finalCategory,
-      garmentType: `${finalItemName} (${finalCategory})`,
+      category: draft.category,
+      garmentType: `${finalItemName} (${draft.category})`,
       size: draft.selectedSizes.join(', '),
       sizes: draft.selectedSizes,
       color: draft.selectedColors.join(', '),
@@ -511,15 +591,26 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       photos: draft.photos,
     };
 
-    onSaveEntry(record, draft.rawFiles);
-    setStatusBannerBn(
-      draft.id
-        ? 'প্রোডাকশন এন্ট্রি সফলভাবে আপডেট করা হয়েছে।'
-        : 'নতুন প্রোডাকশন এন্ট্রি সংরক্ষিত হয়েছে।'
-    );
-    setDraft(createEmptyDraft());
-    setIsFormModalOpen(false);
-    setShowInlineForm(false);
+    setIsSaving(true);
+    try {
+      const saveResult = await onSaveEntry(record, draft.rawFiles);
+      if (saveResult.errorBn && !saveResult.persistedToCloud) {
+        setStatusBannerBn(
+          `প্রোডাকশন এন্ট্রি সংরক্ষিত হয়েছে। নোট: ${saveResult.errorBn}`
+        );
+      } else {
+        setStatusBannerBn(
+          draft.id
+            ? 'প্রোডাকশন এন্ট্রি সফলভাবে সুপাবেস ডাটাবেসে আপডেট করা হয়েছে।'
+            : 'নতুন প্রোডাকশন এন্ট্রি সফলভাবে সুপাবেস ডাটাবেসে সংরক্ষিত হয়েছে।'
+        );
+      }
+      setDraft(createEmptyDraft());
+      setIsFormModalOpen(false);
+      setShowInlineForm(false);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const resetFilters = () => {
@@ -536,10 +627,10 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
     });
   };
 
-  // Distinct item names & categories from existing records + defaults
+  // Distinct item names from existing user records for filter dropdown
   const filterItemOptions = useMemo(() => {
     const dynamicItems = entries.map((e) => e.itemName).filter(Boolean);
-    return Array.from(new Set([...GARMENT_ITEM_NAME_OPTIONS, ...dynamicItems]));
+    return Array.from(new Set(dynamicItems));
   }, [entries]);
 
   const filterCategoryOptions = useMemo(() => {
@@ -552,10 +643,24 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
     const fromDt = parseAnyDateToDateObj(filters.dateFrom);
     const toDt = parseAnyDateToDateObj(filters.dateTo);
     const fromTime = fromDt
-      ? new Date(fromDt.getFullYear(), fromDt.getMonth(), fromDt.getDate(), 0, 0, 0).getTime()
+      ? new Date(
+          fromDt.getFullYear(),
+          fromDt.getMonth(),
+          fromDt.getDate(),
+          0,
+          0,
+          0
+        ).getTime()
       : null;
     const toTime = toDt
-      ? new Date(toDt.getFullYear(), toDt.getMonth(), toDt.getDate(), 23, 59, 59).getTime()
+      ? new Date(
+          toDt.getFullYear(),
+          toDt.getMonth(),
+          toDt.getDate(),
+          23,
+          59,
+          59
+        ).getTime()
       : null;
 
     return entries
@@ -602,7 +707,8 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
 
         if (filters.searchQuery.trim()) {
           const q = filters.searchQuery.toLowerCase();
-          const haystack = `${entry.itemName} ${entry.category} ${entry.garmentType} ${entry.size} ${entry.color} ${entry.shortDescription} ${entry.date}`.toLowerCase();
+          const haystack =
+            `${entry.itemName} ${entry.category} ${entry.garmentType} ${entry.size} ${entry.color} ${entry.shortDescription} ${entry.date}`.toLowerCase();
           if (!haystack.includes(q)) return false;
         }
         return true;
@@ -627,7 +733,10 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
     const todayDozens = calculateDozensFromPieces(todayPieces);
     const todayEarned = todayEntries.reduce((s, e) => s + (e.totalWage ?? 0), 0);
 
-    const rangePieces = sortedFilteredEntries.reduce((s, e) => s + (e.pieces ?? 0), 0);
+    const rangePieces = sortedFilteredEntries.reduce(
+      (s, e) => s + (e.pieces ?? 0),
+      0
+    );
     const rangeDozens = Number(
       sortedFilteredEntries
         .reduce(
@@ -637,20 +746,21 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         .toFixed(4)
     );
     const rangeEarned = Number(
-      sortedFilteredEntries.reduce((s, e) => s + (e.totalWage ?? 0), 0).toFixed(2)
+      sortedFilteredEntries
+        .reduce((s, e) => s + (e.totalWage ?? 0), 0)
+        .toFixed(2)
     );
-    const rangeReceived = Number(
+    const rangeSettled = Number(
       sortedFilteredEntries
         .reduce((s, e) => {
-          if (e.receivedWage !== null && e.receivedWage !== undefined && e.receivedWage > 0) {
-            return s + e.receivedWage;
-          }
           if (e.settlementStatus === 'settled') return s + (e.totalWage ?? 0);
           return s;
         }, 0)
         .toFixed(2)
     );
-    const rangePending = Number(Math.max(0, rangeEarned - rangeReceived).toFixed(2));
+    const rangeUnsettled = Number(
+      Math.max(0, rangeEarned - rangeSettled).toFixed(2)
+    );
 
     return {
       todayPieces,
@@ -659,126 +769,136 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       rangePieces,
       rangeDozens,
       rangeEarned,
-      rangeReceived,
-      rangePending,
+      rangeSettled,
+      rangeUnsettled,
     };
   }, [entries, sortedFilteredEntries]);
 
   const renderStructuredForm = (isModalContext: boolean) => (
     <form onSubmit={handleSubmitForm} className="space-y-6">
+      {/* AI Voice Quick Banner inside Form */}
+      <div className="rounded-2xl border border-teal-200 dark:border-teal-800/80 bg-teal-50/70 dark:bg-teal-950/40 p-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="space-y-0.5">
+          <p className="text-xs sm:text-sm font-bold text-teal-950 dark:text-teal-100 flex items-center gap-1.5">
+            <Sparkles className="w-4 h-4 text-teal-700 dark:text-teal-400 shrink-0" />
+            <span>এআই ভয়েস এন্ট্রি (AI Voice Entry)</span>
+          </p>
+          <p className="text-xs text-teal-800 dark:text-teal-300">
+            টাইপ করার বদলে মুখে বলুন: &ldquo;আজকে কটি, সাইজ ২৪, ২৫ ডজন কাজ করেছি, প্রতি ডজন ৩৫ টাকা রেট&rdquo;
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleOpenVoiceEntry}
+          className="min-h-[40px] px-3.5 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
+        >
+          <Mic className="w-4 h-4" />
+          <span>ভয়েস দিয়ে পূরণ করুন</span>
+        </button>
+      </div>
+
       {formErrorBn && (
         <div className="rounded-xl border border-rose-200 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/60 p-3.5 text-xs sm:text-sm font-medium text-rose-800 dark:text-rose-200">
           {formErrorBn}
         </div>
       )}
 
-      {/* Section A: Production Information */}
+      {/* Section A: Production Information (Date, Custom Item Name, 4 Preset Categories) */}
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/40 p-4 space-y-4">
         <div className="border-b border-slate-200 dark:border-slate-800 pb-2">
           <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-            বিভাগ ক: প্রোডাকশন তথ্য (Production Information)
+            বিভাগ ক: প্রোডাকশন তথ্য (তারিখ, আইটেমের নাম ও ক্যাটাগরি)
           </h3>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            প্রোডাকশন তারিখ, পোশাক আইটেমের নাম এবং ক্যাটাগরি নির্বাচন করুন
+            আইটেমের নাম নিজে লিখুন এবং নিচের ৪টি ক্যাটাগরি থেকে সঠিকটি নির্বাচন করুন
           </p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <DateInputDDMMYYYY
             id={isModalContext ? 'modal-prod-date' : 'inline-prod-date'}
             labelBn="প্রোডাকশন তারিখ (DD-MM-YYYY)"
             valueDDMMYYYY={draft.date}
-            onChangeDDMMYYYY={(val) => setDraft((prev) => ({ ...prev, date: val }))}
+            onChangeDDMMYYYY={(val) =>
+              setDraft((prev) => ({ ...prev, date: val }))
+            }
           />
 
-          <div className="space-y-2">
-            <FormSelect
-              id={isModalContext ? 'modal-item-name' : 'inline-item-name'}
-              labelBn="আইটেমের নাম (Item Name)"
-              value={draft.itemName}
-              onChange={(e) =>
-                setDraft((prev) => ({ ...prev, itemName: e.target.value }))
-              }
-              options={[
-                ...GARMENT_ITEM_NAME_OPTIONS.map((item) => ({
-                  value: item,
-                  labelBn: item,
-                })),
-                { value: 'CUSTOM', labelBn: '+ নতুন আইটেমের নাম লিখুন...' },
-              ]}
-            />
-            {draft.itemName === 'CUSTOM' && (
-              <FormInput
-                id={isModalContext ? 'modal-custom-item' : 'inline-custom-item'}
-                labelBn="নতুন আইটেমের নাম"
-                placeholder="যেমন: কার্গো প্যান্ট পকেট জয়েন্ট"
-                value={draft.customItemName}
-                onChange={(e) =>
-                  setDraft((prev) => ({ ...prev, customItemName: e.target.value }))
-                }
-              />
-            )}
-          </div>
+          <FormInput
+            id={isModalContext ? 'modal-item-name' : 'inline-item-name'}
+            labelBn="আইটেমের নাম (বাংলা বা ইংরেজিতে লিখুন)"
+            type="text"
+            placeholder="যেমন: বাচ্চাদের গোলগলা / Half Sleeve T-Shirt"
+            value={draft.itemName}
+            onChange={(e) =>
+              setDraft((prev) => ({ ...prev, itemName: e.target.value }))
+            }
+          />
+        </div>
 
-          <div className="space-y-2">
-            <FormSelect
-              id={isModalContext ? 'modal-category' : 'inline-category'}
-              labelBn="ক্যাটাগরি (Category)"
-              value={draft.category}
-              onChange={(e) =>
-                setDraft((prev) => ({ ...prev, category: e.target.value }))
-              }
-              options={[
-                ...GARMENT_CATEGORY_OPTIONS.map((cat) => ({
-                  value: cat,
-                  labelBn: cat,
-                })),
-                { value: 'CUSTOM', labelBn: '+ নতুন ক্যাটাগরি লিখুন...' },
-              ]}
-            />
-            {draft.category === 'CUSTOM' && (
-              <FormInput
-                id={isModalContext ? 'modal-custom-cat' : 'inline-custom-cat'}
-                labelBn="নতুন ক্যাটাগরির নাম"
-                placeholder="যেমন: সোয়েটার / জ্যাকেট"
-                value={draft.customCategory}
-                onChange={(e) =>
-                  setDraft((prev) => ({ ...prev, customCategory: e.target.value }))
-                }
-              />
-            )}
+        {/* 4 Preset Categories Only: কটি, গোলগোলা, শার্ট, প্যান্ট */}
+        <div className="space-y-2 pt-1">
+          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+            ক্যাটাগরি নির্বাচন করুন {draft.category ? `(${draft.category})` : '(যেকোনো ১টি নির্বাচন করুন)'}
+          </label>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            {GARMENT_CATEGORY_OPTIONS.map((cat) => {
+              const isSelected = draft.category === cat;
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      category: prev.category === cat ? '' : cat,
+                    }))
+                  }
+                  className={`min-h-[44px] px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold border transition-colors cursor-pointer ${
+                    isSelected
+                      ? 'bg-teal-700 text-white border-teal-700 dark:bg-teal-600 dark:border-teal-500 shadow-xs'
+                      : 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {cat}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
 
-      {/* Section B: Size and Color (Multi-select + User-defined) */}
+      {/* Section B: Preset Sizes (14-32) and Color */}
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/40 p-4 space-y-4">
         <div className="border-b border-slate-200 dark:border-slate-800 pb-2">
           <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-            বিভাগ খ: সাইজ ও রঙ (Size & Color — এক বা একাধিক নির্বাচনযোগ্য)
+            বিভাগ খ: সাইজ ও রঙ নির্বাচন
           </h3>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            ট্যাপ করে এক বা একাধিক সাইজ ও রঙ নির্বাচন করুন অথবা নিজের মতো যোগ করুন
+            ট্যাপ করে এক বা একাধিক সাইজ (১৪–৩২) এবং পোশাকের রঙ নির্বাচন করুন
           </p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          {/* Sizes */}
+          {/* 11 Preset Sizes: ১৪, ১৬, ১৮, ২০, ২২, ২৪, ২৬, ২৮, ৩০, ৩১, ৩২ */}
           <div className="space-y-2.5">
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-              সাইজ নির্বাচন ({draft.selectedSizes.join(', ')})
+              সাইজ নির্বাচন করুন{' '}
+              {draft.selectedSizes.length > 0
+                ? `(${draft.selectedSizes.join(', ')})`
+                : '(এক বা একাধিক)'}
             </label>
             <div className="flex flex-wrap gap-2">
-              {availableSizes.map((sz) => {
+              {GARMENT_SIZE_OPTIONS.map((sz) => {
                 const isSelected = draft.selectedSizes.includes(sz);
                 return (
                   <button
                     key={sz}
                     type="button"
                     onClick={() => toggleSizeSelection(sz)}
-                    className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
+                    className={`min-h-[40px] min-w-[46px] px-3 py-1.5 rounded-xl text-xs sm:text-sm font-bold border transition-colors cursor-pointer ${
                       isSelected
-                        ? 'bg-teal-700 text-white border-teal-700 dark:bg-teal-600 dark:border-teal-500'
+                        ? 'bg-teal-700 text-white border-teal-700 dark:bg-teal-600 dark:border-teal-500 shadow-xs'
                         : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
                     }`}
                   >
@@ -787,30 +907,15 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                 );
               })}
             </div>
-            <div className="flex items-center gap-2 pt-1">
-              <input
-                type="text"
-                value={draft.customSizeInput}
-                onChange={(e) =>
-                  setDraft((prev) => ({ ...prev, customSizeInput: e.target.value }))
-                }
-                placeholder="নতুন সাইজ (যেমন: 4XL, 32)"
-                className="flex-1 min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs sm:text-sm"
-              />
-              <button
-                type="button"
-                onClick={handleAddCustomSize}
-                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-semibold shrink-0 cursor-pointer"
-              >
-                + সাইজ যোগ
-              </button>
-            </div>
           </div>
 
           {/* Colors */}
           <div className="space-y-2.5">
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-              রঙ নির্বাচন ({draft.selectedColors.join(', ')})
+              রঙ নির্বাচন (ঐচ্ছিক){' '}
+              {draft.selectedColors.length > 0
+                ? `(${draft.selectedColors.join(', ')})`
+                : ''}
             </label>
             <div className="flex flex-wrap gap-2">
               {availableColors.map((clr) => {
@@ -836,9 +941,12 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                 type="text"
                 value={draft.customColorInput}
                 onChange={(e) =>
-                  setDraft((prev) => ({ ...prev, customColorInput: e.target.value }))
+                  setDraft((prev) => ({
+                    ...prev,
+                    customColorInput: e.target.value,
+                  }))
                 }
-                placeholder="নতুন রঙ (যেমন: স্কাই ব্লু)"
+                placeholder="নতুন রঙ লিখুন (যেমন: স্কাই ব্লু)"
                 className="flex-1 min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs sm:text-sm"
               />
               <button
@@ -853,45 +961,46 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         </div>
       </div>
 
-      {/* Section C: Quantity and Wage Calculation */}
+      {/* Section C: Quantity, Rate per Dozen, Automatic Wage & Rate Settlement Status */}
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/40 p-4 space-y-4">
         <div className="border-b border-slate-200 dark:border-slate-800 pb-2">
           <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-            বিভাগ গ: পরিমাণ ও স্বয়ংক্রিয় মজুরি হিসাব (Quantity & Wage Calculation)
+            বিভাগ গ: পরিমাণ, প্রতি ডজনের দর ও স্বয়ংক্রিয় মজুরি হিসাব
           </h3>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            সূত্র: ডজন = পিস ÷ ১২ · অর্জিত মজুরি = ডজন × প্রতি ডজনের দর (ঐতিহাসিক দর হিসেবে সংরক্ষিত থাকে)
+            পিস অথবা ডজন লিখলে অপরটি স্বয়ংক্রিয়ভাবে হিসাব হবে (১ ডজন = ১২ পিস) এবং মোট মজুরি = ডজন × দর
           </p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <FormInput
             id={isModalContext ? 'modal-pieces' : 'inline-pieces'}
-            labelBn="পিস সংখ্যা (Quantity in Pieces)"
+            labelBn="পিস সংখ্যা (Pieces)"
             type="text"
             inputMode="numeric"
-            placeholder="যেমন: ১৪৪"
+            placeholder="যেমন: ৩০০"
             rightUnitBn="পিস"
             value={draft.pieces}
-            onChange={(e) => setDraft((prev) => ({ ...prev, pieces: e.target.value }))}
+            onChange={(e) => handlePiecesChange(e.target.value)}
           />
 
-          <div className="space-y-1.5">
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-              স্বয়ংক্রিয় ডজন (Pieces ÷ 12)
-            </label>
-            <div className="min-h-[44px] px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-sm font-mono tabular-nums font-bold flex items-center justify-between">
-              <span>{formatDozensBn(calculatedDozens)}</span>
-              <span className="text-xs font-sans font-medium text-slate-500">ডজন</span>
-            </div>
-          </div>
+          <FormInput
+            id={isModalContext ? 'modal-dozens' : 'inline-dozens'}
+            labelBn="ডজন সংখ্যা (Pieces ÷ 12)"
+            type="text"
+            inputMode="decimal"
+            placeholder="যেমন: ২৫"
+            rightUnitBn="ডজন"
+            value={draft.dozensInput}
+            onChange={(e) => handleDozensChange(e.target.value)}
+          />
 
           <FormInput
             id={isModalContext ? 'modal-rate' : 'inline-rate'}
             labelBn="প্রতি ডজনের দর (Rate per Dozen)"
             type="text"
             inputMode="decimal"
-            placeholder="যেমন: ১২০.০০"
+            placeholder="যেমন: ৩৫"
             rightUnitBn="৳/ডজন"
             value={draft.ratePerDozen}
             onChange={(e) =>
@@ -901,21 +1010,22 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
 
           <div className="space-y-1.5">
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-              স্বয়ংক্রিয় অর্জিত মজুরি (Earned Wage)
+              স্বয়ংক্রিয় অর্জিত মজুরি (মোট মজুরি)
             </label>
             <div className="min-h-[44px] px-3.5 py-2.5 rounded-xl border border-teal-200 dark:border-teal-800 bg-teal-50/70 dark:bg-teal-950/60 text-teal-900 dark:text-teal-200 text-sm font-mono tabular-nums font-bold flex items-center justify-between">
               <span>{formatTaka(calculatedEarnedWage, true)}</span>
               <span className="text-xs font-sans font-medium text-teal-700 dark:text-teal-400">
-                মোট মজুরি
+                {formatDozensBn(calculatedDozens)} ডজন
               </span>
             </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-200/70 dark:border-slate-800/70">
+        {/* Rate Settlement Status (Renamed from Wage Settlement Status; "প্রাপ্ত মজুরি" removed) */}
+        <div className="pt-2 border-t border-slate-200/70 dark:border-slate-800/70">
           <FormSelect
             id={isModalContext ? 'modal-settlement' : 'inline-settlement'}
-            labelBn="মজুরি পরিশোধের অবস্থা (Wage Settlement Status — কাজ সম্পন্ন থেকে স্বাধীন)"
+            labelBn="রেট নিষ্পত্তি স্ট্যাটাস (কাজের অবস্থা থেকে সম্পূর্ণ স্বাধীন)"
             value={draft.settlementStatus}
             onChange={(e) =>
               setDraft((prev) => ({
@@ -924,35 +1034,22 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
               }))
             }
             options={[
-              { value: 'pending', labelBn: 'মজুরি বকেয়া (Pending)' },
-              { value: 'settled', labelBn: 'মজুরি পরিশোধিত (Settled)' },
+              { value: 'pending', labelBn: 'রেট নিষ্পত্তি হয়নি' },
+              { value: 'settled', labelBn: 'নিষ্পত্তি হয়েছে' },
             ]}
-          />
-
-          <FormInput
-            id={isModalContext ? 'modal-received-wage' : 'inline-received-wage'}
-            labelBn="প্রাপ্ত মজুরি (Received Wage — ঐচ্ছিক আংশিক বা পূর্ণ টাকা)"
-            type="text"
-            inputMode="decimal"
-            placeholder="যেমন: ০.০০"
-            rightUnitBn="৳"
-            value={draft.receivedWage}
-            onChange={(e) =>
-              setDraft((prev) => ({ ...prev, receivedWage: e.target.value }))
-            }
           />
         </div>
       </div>
 
-      {/* Section D: Work Timing (Start Work, End Work, Duration, Work Status) */}
+      {/* Section D: Work Timing (Analog Clock Time Picker for Start Work & End Work) */}
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/40 p-4 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-2">
           <div>
             <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-              বিভাগ ঘ: কাজের সময় নির্ধারণ (Work Timing — Start & End Work)
+              বিভাগ ঘ: কাজের সময় নির্ধারণ (অ্যানালগ ঘড়ি ও কাজের অবস্থা)
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              বাটনে ক্লিক করে বর্তমান সময় রেকর্ড করুন অথবা ম্যানুয়ালি সম্পাদনা করুন
+              ঘড়ির কাঁটা ঘুরিয়ে ঘণ্টা ও মিনিট (AM/PM) নির্বাচন করুন অথবা সরাসরি বর্তমান সময় নিন
             </p>
           </div>
 
@@ -963,7 +1060,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
               className="min-h-[40px] px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
             >
               <Play className="w-3.5 h-3.5" />
-              <span>কাজ শুরু (Start Work)</span>
+              <span>এখন কাজ শুরু</span>
             </button>
             <button
               type="button"
@@ -971,53 +1068,39 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
               className="min-h-[40px] px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
             >
               <Square className="w-3.5 h-3.5" />
-              <span>কাজ শেষ (End Work)</span>
+              <span>এখন কাজ শেষ</span>
             </button>
           </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="space-y-1.5">
-            <label
-              htmlFor={isModalContext ? 'modal-start-time' : 'inline-start-time'}
-              className="block text-sm font-medium text-slate-700 dark:text-slate-300"
-            >
-              কাজ শুরুর সময় (Start Work)
-            </label>
-            <input
-              id={isModalContext ? 'modal-start-time' : 'inline-start-time'}
-              type="datetime-local"
-              value={draft.startWorkTime}
-              onChange={(e) =>
-                setDraft((prev) => ({
-                  ...prev,
-                  startWorkTime: e.target.value,
-                }))
-              }
-              className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs sm:text-sm font-mono text-slate-900 dark:text-slate-100"
-            />
-          </div>
+          <AnalogClockTimePicker
+            id={isModalContext ? 'modal-start-time' : 'inline-start-time'}
+            labelBn="কাজ শুরুর সময় (Start Work)"
+            valueDateTimeLocal={draft.startWorkTime}
+            defaultDateDDMMYYYY={draft.date}
+            onChangeDateTimeLocal={(val) =>
+              setDraft((prev) => ({
+                ...prev,
+                startWorkTime: val,
+              }))
+            }
+            placeholderBn="শুরুর সময় (ঘড়ি খুলুন)"
+          />
 
-          <div className="space-y-1.5">
-            <label
-              htmlFor={isModalContext ? 'modal-end-time' : 'inline-end-time'}
-              className="block text-sm font-medium text-slate-700 dark:text-slate-300"
-            >
-              কাজ শেষের সময় (End Work)
-            </label>
-            <input
-              id={isModalContext ? 'modal-end-time' : 'inline-end-time'}
-              type="datetime-local"
-              value={draft.endWorkTime}
-              onChange={(e) =>
-                setDraft((prev) => ({
-                  ...prev,
-                  endWorkTime: e.target.value,
-                }))
-              }
-              className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs sm:text-sm font-mono text-slate-900 dark:text-slate-100"
-            />
-          </div>
+          <AnalogClockTimePicker
+            id={isModalContext ? 'modal-end-time' : 'inline-end-time'}
+            labelBn="কাজ শেষের সময় (End Work)"
+            valueDateTimeLocal={draft.endWorkTime}
+            defaultDateDDMMYYYY={draft.date}
+            onChangeDateTimeLocal={(val) =>
+              setDraft((prev) => ({
+                ...prev,
+                endWorkTime: val,
+              }))
+            }
+            placeholderBn="শেষের সময় (ঘড়ি খুলুন)"
+          />
 
           <div className="space-y-1.5">
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -1046,8 +1129,8 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
               }))
             }
             options={[
-              { value: 'in_progress', labelBn: 'কাজ চলমান (In Progress — নীল)' },
-              { value: 'completed', labelBn: 'কাজ সম্পন্ন (Completed)' },
+              { value: 'in_progress', labelBn: 'কাজ চলছে (নীল)' },
+              { value: 'completed', labelBn: 'কাজ সম্পন্ন' },
             ]}
           />
         </div>
@@ -1057,7 +1140,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/40 p-4 space-y-4">
         <div className="border-b border-slate-200 dark:border-slate-800 pb-2">
           <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-            বিভাগ ঙ: অতিরিক্ত তথ্য ও ছবি (Additional Information)
+            বিভাগ ঙ: অতিরিক্ত তথ্য ও ছবি (ঐচ্ছিক)
           </h3>
         </div>
 
@@ -1092,11 +1175,16 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         </button>
         <button
           type="submit"
-          className="min-h-[44px] px-5 py-2.5 rounded-xl bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-500 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
+          disabled={isSaving}
+          className="min-h-[44px] px-5 py-2.5 rounded-xl bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-500 disabled:opacity-50 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           <span>
-            {draft.id ? 'প্রোডাকশন তথ্য আপডেট করুন' : 'প্রোডাকশন এন্ট্রি সংরক্ষণ করুন'}
+            {isSaving
+              ? 'ডাটাবেসে সংরক্ষণ হচ্ছে...'
+              : draft.id
+              ? 'প্রোডাকশন তথ্য আপডেট করুন'
+              : 'প্রোডাকশন এন্ট্রি সংরক্ষণ করুন'}
           </span>
         </button>
       </div>
@@ -1107,17 +1195,43 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
       <PageHeader
         moduleIndexBn="০২. প্রধান মডিউল · প্রোডাকশন হিসাব"
-        titleBn="প্রোডাকশন ইতিহাস ও কাজের সময় ট্র্যাকিং"
-        subtitleBn="প্রতিদিনের সেলাইকৃত পোশাকের পিস, স্বয়ংক্রিয় ডজন ও মজুরি হিসাব, কাজ শুরু/শেষের সময় এবং স্বাধীন পরিশোধ স্ট্যাটাস"
+        titleBn="প্রোডাকশন ইতিহাস, এআই ভয়েস এন্ট্রি ও কাজের সময় ট্র্যাকিং"
+        subtitleBn="প্রতিদিনের সেলাইকৃত পোশাকের পিস, স্বয়ংক্রিয় ডজন ও মজুরি হিসাব, অ্যানালগ ঘড়িতে কাজের সময় এবং রেট নিষ্পত্তি স্ট্যাটাস"
         primaryActionLabelBn="নতুন প্রোডাকশন যোগ করুন"
         primaryActionIcon={<Plus className="w-4 h-4" />}
         onPrimaryAction={handleOpenAddModal}
-        secondaryActionLabelBn={
-          showInlineForm ? 'ফর্ম প্যানেল লুকান' : 'পাতার উপরে ফর্ম খুলুন'
-        }
-        secondaryActionIcon={<FilePlus2 className="w-4 h-4" />}
-        onSecondaryAction={() => setShowInlineForm((prev) => !prev)}
+        secondaryActionLabelBn="এআই ভয়েস এন্ট্রি (AI Voice)"
+        secondaryActionIcon={<Mic className="w-4 h-4" />}
+        onSecondaryAction={handleOpenVoiceEntry}
       />
+
+      {/* Toggle Inline Form Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3">
+        <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-700 dark:text-slate-300 font-medium">
+          <Scissors className="w-4 h-4 text-teal-700 dark:text-teal-400 shrink-0" />
+          <span>
+            দ্রুত এন্ট্রির জন্য পাতার উপরে ফর্ম খুলুন অথবা মাইক্রোফোনে ভয়েস দিয়ে বলুন
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleOpenVoiceEntry}
+            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-teal-50 dark:bg-teal-950/70 text-teal-800 dark:text-teal-200 border border-teal-200 dark:border-teal-800 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+          >
+            <Mic className="w-3.5 h-3.5" />
+            <span>ভয়েস এন্ট্রি</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowInlineForm((prev) => !prev)}
+            className="min-h-[38px] px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1.5 cursor-pointer"
+          >
+            <FilePlus2 className="w-3.5 h-3.5" />
+            <span>{showInlineForm ? 'ফর্ম প্যানেল লুকান' : 'পাতার উপরে ফর্ম খুলুন'}</span>
+          </button>
+        </div>
+      </div>
 
       {statusBannerBn && (
         <div className="rounded-2xl border border-teal-200 dark:border-teal-800/80 bg-teal-50/70 dark:bg-teal-950/40 px-4 py-3 flex items-center justify-between gap-3 text-xs sm:text-sm text-teal-900 dark:text-teal-200">
@@ -1137,9 +1251,9 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         <SummaryCard
           titleBn="আজকের প্রোডাকশন ও মজুরি"
           amount={filteredSummary.todayEarned}
-          subtitleBn={`আজ: ${toBengaliDigits(filteredSummary.todayPieces)} পিস (${formatDozensBn(
-            filteredSummary.todayDozens
-          )} ডজন)`}
+          subtitleBn={`আজ: ${toBengaliDigits(
+            filteredSummary.todayPieces
+          )} পিস (${formatDozensBn(filteredSummary.todayDozens)} ডজন)`}
           icon={<Scissors className="w-5 h-5" />}
           tone="accent"
         />
@@ -1158,14 +1272,17 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         <SummaryCard
           titleBn="তালিকাভুক্ত মোট অর্জিত মজুরি"
           amount={filteredSummary.rangeEarned}
-          subtitleBn={`প্রাপ্ত মজুরি: ${formatTaka(filteredSummary.rangeReceived, true)}`}
+          subtitleBn={`নিষ্পত্তি হয়েছে: ${formatTaka(
+            filteredSummary.rangeSettled,
+            true
+          )}`}
           icon={<CheckCircle2 className="w-5 h-5" />}
           tone="positive"
         />
         <SummaryCard
-          titleBn="তালিকাভুক্ত বকেয়া মজুরি"
-          amount={filteredSummary.rangePending}
-          subtitleBn="কাজ সম্পন্ন হলেও অপরিশোধিত বকেয়া"
+          titleBn="রেট নিষ্পত্তি হয়নি (মোট)"
+          amount={filteredSummary.rangeUnsettled}
+          subtitleBn="নিষ্পত্তি অপেক্ষমাণ এন্ট্রির মজুরি"
           icon={<Wallet className="w-5 h-5" />}
           tone="warning"
         />
@@ -1174,20 +1291,20 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       {/* Visual Status Legend */}
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5 sm:p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
         <span className="font-semibold text-slate-700 dark:text-slate-300">
-          স্ট্যাটাস রঙের নির্দেশিকা (কাজের অবস্থা ও মজুরি পরিশোধ সম্পূর্ণ স্বাধীন):
+          স্ট্যাটাস রঙের নির্দেশিকা (কাজের অবস্থা ও রেট নিষ্পত্তি স্ট্যাটাস সম্পূর্ণ স্বাধীন):
         </span>
         <div className="flex flex-wrap items-center gap-4 text-slate-700 dark:text-slate-300">
           <span className="inline-flex items-center gap-1.5">
             <span className="w-3 h-3 rounded-xs bg-sky-500 inline-block" />
-            <span>কাজ চলমান (In Progress — নীল)</span>
+            <span>কাজ চলছে (নীল)</span>
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="w-3 h-3 rounded-xs bg-amber-500 inline-block" />
-            <span>কাজ সম্পন্ন কিন্তু মজুরি বকেয়া (Pending — কমলা/হলুদ)</span>
+            <span>রেট নিষ্পত্তি হয়নি (কমলা/হলুদ)</span>
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="w-3 h-3 rounded-xs bg-emerald-500 inline-block" />
-            <span>মজুরি পরিশোধিত (Wage Settled — সবুজ)</span>
+            <span>নিষ্পত্তি হয়েছে (সবুজ)</span>
           </span>
         </div>
       </div>
@@ -1203,7 +1320,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
               id="production-form-heading"
               className="text-base font-bold text-slate-900 dark:text-slate-100"
             >
-              প্রোডাকশন এন্ট্রি ফর্ম (৫টি বিভাগে বিন্যস্ত)
+              প্রোডাকশন এন্ট্রি ফর্ম
             </h2>
           </div>
           {renderStructuredForm(false)}
@@ -1245,7 +1362,10 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                 type="search"
                 value={filters.searchQuery}
                 onChange={(e) =>
-                  setFilters((prev) => ({ ...prev, searchQuery: e.target.value }))
+                  setFilters((prev) => ({
+                    ...prev,
+                    searchQuery: e.target.value,
+                  }))
                 }
                 placeholder="আইটেমের নাম, ক্যাটাগরি, নোট বা তারিখ খুঁজুন..."
                 className="w-full min-h-[44px] pl-9 pr-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 text-sm"
@@ -1312,7 +1432,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
             }
             options={[
               { value: 'ALL', labelBn: 'সকল সাইজ' },
-              ...availableSizes.map((sz) => ({ value: sz, labelBn: sz })),
+              ...GARMENT_SIZE_OPTIONS.map((sz) => ({ value: sz, labelBn: sz })),
             ]}
           />
 
@@ -1341,14 +1461,14 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
             }
             options={[
               { value: 'ALL', labelBn: 'সকল কাজের অবস্থা' },
-              { value: 'in_progress', labelBn: 'কাজ চলমান (In Progress)' },
-              { value: 'completed', labelBn: 'কাজ সম্পন্ন (Completed)' },
+              { value: 'in_progress', labelBn: 'কাজ চলছে' },
+              { value: 'completed', labelBn: 'কাজ সম্পন্ন' },
             ]}
           />
 
           <FormSelect
             id="prod-filter-settlement-status"
-            labelBn="মজুরি পরিশোধ স্ট্যাটাস"
+            labelBn="রেট নিষ্পত্তি স্ট্যাটাস"
             value={filters.settlementStatus}
             onChange={(e) =>
               setFilters((prev) => ({
@@ -1357,9 +1477,9 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
               }))
             }
             options={[
-              { value: 'ALL', labelBn: 'সকল পরিশোধ স্ট্যাটাস' },
-              { value: 'pending', labelBn: 'মজুরি বকেয়া (Pending)' },
-              { value: 'settled', labelBn: 'মজুরি পরিশোধিত (Settled)' },
+              { value: 'ALL', labelBn: 'সকল নিষ্পত্তি স্ট্যাটাস' },
+              { value: 'pending', labelBn: 'রেট নিষ্পত্তি হয়নি' },
+              { value: 'settled', labelBn: 'নিষ্পত্তি হয়েছে' },
             ]}
           />
         </div>
@@ -1382,20 +1502,30 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
               মোবাইলে কার্ড ভিউ এবং ডেস্কটপে বিস্তারিত টেবিল ভিউ
             </p>
           </div>
-          <button
-            type="button"
-            onClick={handleOpenAddModal}
-            className="min-h-[42px] px-3.5 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>নতুন প্রোডাকশন যোগ করুন</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleOpenVoiceEntry}
+              className="min-h-[42px] px-3.5 py-2 rounded-xl border border-teal-300 dark:border-teal-800 text-teal-800 dark:text-teal-200 text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <Mic className="w-4 h-4" />
+              <span>ভয়েস এন্ট্রি</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleOpenAddModal}
+              className="min-h-[42px] px-3.5 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>নতুন প্রোডাকশন যোগ করুন</span>
+            </button>
+          </div>
         </div>
 
         {sortedFilteredEntries.length === 0 ? (
           <EmptyDataState
             titleBn="কোনো প্রোডাকশন ইতিহাস পাওয়া যায়নি"
-            descriptionBn="নতুন প্রোডাকশন যোগ করুন বাটনে ক্লিক করে অথবা ডেটা ইমপোর্ট মডিউল থেকে আপনার Google Sheets / Excel ফাইল ইমপোর্ট করুন।"
+            descriptionBn="নতুন প্রোডাকশন যোগ করুন বাটনে ক্লিক করে, এআই ভয়েস এন্ট্রি ব্যবহার করে অথবা ডেটা ইমপোর্ট মডিউল থেকে আপনার Google Sheets / Excel ফাইল ইমপোর্ট করুন।"
             tableNameHint="production_entries"
             actionLabelBn="নতুন প্রোডাকশন যোগ করুন"
             onActionClick={handleOpenAddModal}
@@ -1422,7 +1552,9 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                           {entry.itemName || entry.garmentType}
                         </h3>
                         <p className="text-xs text-slate-600 dark:text-slate-400 break-words">
-                          ক্যাটাগরি: {entry.category} · সাইজ: {entry.size} · রঙ: {entry.color}
+                          ক্যাটাগরি: {entry.category || '—'} · সাইজ:{' '}
+                          {entry.size || '—'}
+                          {entry.color ? ` · রঙ: ${entry.color}` : ''}
                         </p>
                       </div>
                       <div className="text-right shrink-0">
@@ -1450,7 +1582,9 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                         <span className={`block font-semibold ${visual.workTextColor}`}>
                           {visual.workLabelBn}
                         </span>
-                        <span className={`block font-semibold ${visual.settlementTextColor}`}>
+                        <span
+                          className={`block font-semibold ${visual.settlementTextColor}`}
+                        >
                           {visual.settlementLabelBn}
                         </span>
                       </div>
@@ -1460,14 +1594,22 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                     <div className="rounded-xl bg-white/80 dark:bg-slate-900/80 border border-slate-200/70 dark:border-slate-800/70 p-2.5 text-xs space-y-1">
                       <div className="flex flex-wrap items-center justify-between gap-1">
                         <span className="text-slate-600 dark:text-slate-400">
-                          শুরু: <strong className="font-mono">{formatWorkTimestampBn(entry.startWorkTime)}</strong>
+                          শুরু:{' '}
+                          <strong className="font-mono">
+                            {formatWorkTimestampBn(entry.startWorkTime)}
+                          </strong>
                         </span>
                         <span className="text-slate-600 dark:text-slate-400">
-                          শেষ: <strong className="font-mono">{formatWorkTimestampBn(entry.endWorkTime)}</strong>
+                          শেষ:{' '}
+                          <strong className="font-mono">
+                            {formatWorkTimestampBn(entry.endWorkTime)}
+                          </strong>
                         </span>
                       </div>
                       <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
-                        <span>কাজের সময়কাল: {formatDurationBn(entry.workDurationMinutes)}</span>
+                        <span>
+                          কাজের সময়কাল: {formatDurationBn(entry.workDurationMinutes)}
+                        </span>
                         {entry.shortDescription && (
                           <span className="truncate max-w-[160px]">
                             নোট: {entry.shortDescription}
@@ -1503,8 +1645,8 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                           <CheckCircle2 className="w-3.5 h-3.5" />
                           <span>
                             {entry.settlementStatus === 'settled'
-                              ? 'বকেয়া করুন'
-                              : 'পরিশোধিত করুন'}
+                              ? 'রেট নিষ্পত্তি হয়নি করুন'
+                              : 'নিষ্পত্তি হয়েছে করুন'}
                           </span>
                         </button>
                       </div>
@@ -1541,11 +1683,17 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                     <th className="py-3.5 px-4 whitespace-nowrap">তারিখ (DD-MM-YYYY)</th>
                     <th className="py-3.5 px-4">আইটেম ও ক্যাটাগরি</th>
                     <th className="py-3.5 px-4">সাইজ ও রঙ</th>
-                    <th className="py-3.5 px-4 text-right whitespace-nowrap">পিস ও ডজন</th>
-                    <th className="py-3.5 px-4 text-right whitespace-nowrap">দর ও অর্জিত মজুরি</th>
+                    <th className="py-3.5 px-4 text-right whitespace-nowrap">
+                      পিস ও ডজন
+                    </th>
+                    <th className="py-3.5 px-4 text-right whitespace-nowrap">
+                      দর ও অর্জিত মজুরি
+                    </th>
                     <th className="py-3.5 px-4">কাজের সময় (শুরু - শেষ)</th>
-                    <th className="py-3.5 px-4">কাজের ও মজুরি স্ট্যাটাস</th>
-                    <th className="py-3.5 px-4 text-right whitespace-nowrap">কার্যক্রম</th>
+                    <th className="py-3.5 px-4">কাজের ও রেট নিষ্পত্তি স্ট্যাটাস</th>
+                    <th className="py-3.5 px-4 text-right whitespace-nowrap">
+                      কার্যক্রম
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
@@ -1564,15 +1712,19 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                             {entry.itemName || entry.garmentType}
                           </p>
                           <p className="text-xs text-slate-500 dark:text-slate-400">
-                            {entry.category}
-                            {entry.shortDescription ? ` · ${entry.shortDescription}` : ''}
+                            ক্যাটাগরি: {entry.category || '—'}
+                            {entry.shortDescription
+                              ? ` · ${entry.shortDescription}`
+                              : ''}
                           </p>
                         </td>
                         <td className="py-3.5 px-4 text-xs text-slate-700 dark:text-slate-300 align-top">
-                          <p>সাইজ: {entry.size}</p>
-                          <p className="text-slate-500 dark:text-slate-400">
-                            রঙ: {entry.color}
-                          </p>
+                          <p>সাইজ: {entry.size || '—'}</p>
+                          {entry.color && (
+                            <p className="text-slate-500 dark:text-slate-400">
+                              রঙ: {entry.color}
+                            </p>
+                          )}
                         </td>
                         <td className="py-3.5 px-4 text-right font-mono tabular-nums align-top whitespace-nowrap">
                           <p className="font-bold text-slate-900 dark:text-slate-100">
@@ -1605,7 +1757,9 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                           <p className={`font-bold ${visual.workTextColor}`}>
                             {visual.workLabelBn}
                           </p>
-                          <p className={`font-semibold mt-0.5 ${visual.settlementTextColor}`}>
+                          <p
+                            className={`font-semibold mt-0.5 ${visual.settlementTextColor}`}
+                          >
                             {visual.settlementLabelBn}
                           </p>
                         </td>
@@ -1632,12 +1786,14 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                               </button>
                               <button
                                 type="button"
-                                onClick={() => handleQuickToggleSettlementOnEntry(entry)}
+                                onClick={() =>
+                                  handleQuickToggleSettlementOnEntry(entry)
+                                }
                                 className="min-h-[34px] px-2.5 py-1 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-xs font-semibold cursor-pointer"
                               >
                                 {entry.settlementStatus === 'settled'
-                                  ? 'বকেয়া করুন'
-                                  : 'পরিশোধিত'}
+                                  ? 'রেট নিষ্পত্তি হয়নি'
+                                  : 'নিষ্পত্তি হয়েছে'}
                               </button>
                             </div>
                             <div className="inline-flex items-center gap-1">
@@ -1677,11 +1833,19 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         titleBn={
           draft.id ? 'প্রোডাকশন এন্ট্রি সম্পাদনা করুন' : 'নতুন প্রোডাকশন যোগ করুন'
         }
-        subtitleBn="৫টি যৌক্তিক বিভাগে প্রোডাকশন তথ্য, সাইজ/রঙ, স্বয়ংক্রিয় ডজন ও মজুরি এবং কাজের সময় নির্ধারণ"
+        subtitleBn="কাস্টম আইটেমের নাম, ৪টি ক্যাটাগরি, ১১টি সাইজ, স্বয়ংক্রিয় মজুরি এবং অ্যানালগ ঘড়িতে কাজের সময় নির্ধারণ"
         maxWidthClass="max-w-3xl"
       >
         {renderStructuredForm(true)}
       </ModalDrawer>
+
+      {/* AI Voice Entry Modal */}
+      <AiVoiceEntryModal
+        isOpen={isVoiceModalOpen}
+        onClose={() => setIsVoiceModalOpen(false)}
+        defaultDateDDMMYYYY={draft.date || getTodayDDMMYYYY(false)}
+        onApplyToForm={handleApplyVoiceDataToForm}
+      />
     </div>
   );
 };

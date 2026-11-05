@@ -452,7 +452,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                       <span>
                         {entry.workStatus === 'completed'
                           ? 'কাজ সম্পন্ন'
-                          : 'কাজ চলমান'}
+                          : 'কাজ চলছে'}
                       </span>
                       <span className="mx-1.5" aria-hidden="true">
                         ·
@@ -465,8 +465,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                         }
                       >
                         {entry.settlementStatus === 'settled'
-                          ? 'পরিশোধিত'
-                          : 'বকেয়া'}
+                          ? 'নিষ্পত্তি হয়েছে'
+                          : 'রেট নিষ্পত্তি হয়নি'}
                       </span>
                     </p>
                   </div>
@@ -485,15 +485,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           )}
         </div>
 
-        {/* Pending Wages List (অপরিশোধিত বকেয়া মজুরি) */}
+        {/* Unsettled Rate Entries List (রেট নিষ্পত্তি হয়নি) */}
         <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
           <div className="px-4 sm:px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                বকেয়া মজুরি (Pending Wages)
+                রেট নিষ্পত্তি হয়নি (অপেক্ষমাণ প্রোডাকশন)
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                অপরিশোধিত প্রোডাকশন এন্ট্রি ও সর্বশেষ আর্থিক লেনদেন
+                যেসব প্রোডাকশন এন্ট্রির রেট নিষ্পত্তি এখনও সম্পন্ন হয়নি
               </p>
             </div>
             <button
@@ -501,15 +501,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               onClick={() => onNavigate(ModuleId.PRODUCTION)}
               className="min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold text-teal-700 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-950/50 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer shrink-0"
             >
-              <span>সব বকেয়া</span>
+              <span>সব দেখুন</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
 
           {pendingWageEntries.length === 0 && recentTransactions.length === 0 ? (
             <EmptyDataState
-              titleBn="কোনো বকেয়া মজুরি বা লেনদেন নেই"
-              descriptionBn="যেসব প্রোডাকশন এন্ট্রির মজুরি এখনও পরিশোধিত (Settled) হয়নি, সেগুলোর তালিকা এখানে অগ্রাধিকার ভিত্তিতে দেখা যাবে।"
+              titleBn="রেট নিষ্পত্তি বাকি থাকা কোনো এন্ট্রি নেই"
+              descriptionBn="যেসব প্রোডাকশন এন্ট্রির রেট এখনও নিষ্পত্তি হয়নি, সেগুলোর তালিকা এখানে অগ্রাধিকার ভিত্তিতে দেখা যাবে।"
               tableNameHint="production_entries (settlement_status = 'pending')"
               actionLabelBn="প্রোডাকশন খতিয়ান দেখুন"
               onActionClick={() => onNavigate(ModuleId.PRODUCTION)}
@@ -532,7 +532,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                         ·
                       </span>
                       <span className="text-amber-700 dark:text-amber-400 font-semibold">
-                        মজুরি বকেয়া (Pending)
+                        রেট নিষ্পত্তি হয়নি
                       </span>
                     </p>
                   </div>

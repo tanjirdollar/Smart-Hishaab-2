@@ -18,6 +18,8 @@ import {
  *
  * Maps between the application's ProductionEntry model and the `public.production_entries`
  * table in Supabase, preserving historical rates, timestamps, and independent statuses.
+ * Includes automatic schema-compatibility fallback if the user's Supabase table
+ * only has the initial Phase 1 columns.
  */
 
 interface SupabaseProductionRow {
@@ -48,9 +50,63 @@ interface SupabaseProductionRow {
   created_at?: string;
 }
 
+interface EmbeddedMetaPayload {
+  in?: string; // itemName
+  cat?: string; // category
+  sz?: string[]; // sizes
+  cl?: string[]; // colors
+  ws?: WorkStatus;
+  ss?: SettlementStatus;
+  st?: string | null;
+  et?: string | null;
+  dur?: number | null;
+  rw?: number | null;
+  pw?: number | null;
+  bid?: string;
+}
+
+const META_PREFIX = '<!--SH_META:';
+const META_SUFFIX = '-->';
+
+function packDescriptionWithMeta(
+  cleanDescription: string,
+  meta: EmbeddedMetaPayload
+): string {
+  const base = (cleanDescription || '').trim();
+  const json = JSON.stringify(meta);
+  return base ? `${base}\n${META_PREFIX}${json}${META_SUFFIX}` : `${META_PREFIX}${json}${META_SUFFIX}`;
+}
+
+function unpackDescriptionAndMeta(rawDescription?: string | null): {
+  cleanDescription: string;
+  meta: EmbeddedMetaPayload | null;
+} {
+  if (!rawDescription) {
+    return { cleanDescription: '', meta: null };
+  }
+  const startIdx = rawDescription.indexOf(META_PREFIX);
+  if (startIdx === -1) {
+    return { cleanDescription: rawDescription, meta: null };
+  }
+  const endIdx = rawDescription.indexOf(META_SUFFIX, startIdx);
+  if (endIdx === -1) {
+    return { cleanDescription: rawDescription, meta: null };
+  }
+  const cleanDescription = rawDescription.slice(0, startIdx).trim();
+  const jsonSlice = rawDescription.slice(startIdx + META_PREFIX.length, endIdx);
+  try {
+    const meta = JSON.parse(jsonSlice) as EmbeddedMetaPayload;
+    return { cleanDescription, meta };
+  } catch {
+    return { cleanDescription, meta: null };
+  }
+}
+
 export function mapSupabaseRowToProductionEntry(
   row: SupabaseProductionRow
 ): ProductionEntry {
+  const { cleanDescription, meta } = unpackDescriptionAndMeta(row.short_description);
+
   const pieces = Number(row.pieces ?? 0);
   const dozens =
     row.dozens !== null && row.dozens !== undefined
@@ -62,14 +118,19 @@ export function mapSupabaseRowToProductionEntry(
       ? Number(row.total_wage)
       : calculateEarnedWageFromPiecesAndRate(pieces, ratePerDozen);
 
+  const rawSettlement = row.settlement_status ?? meta?.ss ?? 'pending';
   const settlementStatus: SettlementStatus =
-    row.settlement_status === 'settled' ? 'settled' : 'pending';
+    rawSettlement === 'settled' ? 'settled' : 'pending';
+
+  const rawWorkStatus = row.work_status ?? meta?.ws ?? 'in_progress';
   const workStatus: WorkStatus =
-    row.work_status === 'completed' ? 'completed' : 'in_progress';
+    rawWorkStatus === 'completed' ? 'completed' : 'in_progress';
 
   const receivedWage =
     row.received_wage !== null && row.received_wage !== undefined
       ? Number(row.received_wage)
+      : meta?.rw !== null && meta?.rw !== undefined
+      ? Number(meta.rw)
       : settlementStatus === 'settled'
       ? totalWage
       : 0;
@@ -77,28 +138,41 @@ export function mapSupabaseRowToProductionEntry(
   const pendingWage =
     row.pending_wage !== null && row.pending_wage !== undefined
       ? Number(row.pending_wage)
+      : meta?.pw !== null && meta?.pw !== undefined
+      ? Number(meta.pw)
       : Math.max(0, Number((totalWage - receivedWage).toFixed(2)));
 
-  const itemName = row.item_name || row.garment_type || 'পোশাক আইটেম';
-  const category = row.category || row.garment_type || 'সাধারণ ক্যাটাগরি';
+  const itemName =
+    row.item_name || meta?.in || row.garment_type || '';
+  const category =
+    row.category || meta?.cat || '';
+
   const sizes =
     Array.isArray(row.sizes) && row.sizes.length > 0
       ? row.sizes
+      : Array.isArray(meta?.sz) && meta.sz.length > 0
+      ? meta.sz
       : row.size
       ? row.size
           .split(',')
           .map((s) => s.trim())
           .filter(Boolean)
-      : ['M'];
+      : [];
+
   const colors =
     Array.isArray(row.colors) && row.colors.length > 0
       ? row.colors
+      : Array.isArray(meta?.cl) && meta.cl.length > 0
+      ? meta.cl
       : row.color
       ? row.color
           .split(',')
           .map((c) => c.trim())
           .filter(Boolean)
-      : ['সাদা (White)'];
+      : [];
+
+  const startWorkTime = row.start_work_time ?? meta?.st ?? null;
+  const endWorkTime = row.end_work_time ?? meta?.et ?? null;
 
   const photos: UploadedPhotoPreview[] = Array.isArray(row.photo_urls)
     ? row.photo_urls.map((url, idx) => ({
@@ -117,7 +191,10 @@ export function mapSupabaseRowToProductionEntry(
     date: isoInputToDDMMYYYY(row.entry_date),
     itemName,
     category,
-    garmentType: `${itemName} (${category})`,
+    garmentType:
+      itemName && category
+        ? `${itemName} (${category})`
+        : itemName || category || row.garment_type || '',
     size: sizes.join(', '),
     sizes,
     color: colors.join(', '),
@@ -130,19 +207,23 @@ export function mapSupabaseRowToProductionEntry(
     pendingWage,
     workStatus,
     settlementStatus,
-    startWorkTime: row.start_work_time ?? null,
-    endWorkTime: row.end_work_time ?? null,
+    startWorkTime,
+    endWorkTime,
     workDurationMinutes:
       row.work_duration_minutes ??
-      calculateDurationMinutes(row.start_work_time, row.end_work_time),
-    shortDescription: row.short_description ?? '',
+      meta?.dur ??
+      calculateDurationMinutes(startWorkTime, endWorkTime),
+    shortDescription: cleanDescription,
     photos,
-    importBatchId: row.import_batch_id ?? undefined,
+    importBatchId: row.import_batch_id ?? meta?.bid ?? undefined,
     createdAt: row.created_at,
   };
 }
 
-export function mapProductionEntryToSupabasePayload(entry: ProductionEntry) {
+export function mapProductionEntryToSupabasePayload(
+  entry: ProductionEntry,
+  userId: string
+): Record<string, unknown> {
   const isoDate =
     ddMmYyyyToIsoInput(entry.date) || new Date().toISOString().slice(0, 10);
   const photoUrls = entry.photos
@@ -150,10 +231,15 @@ export function mapProductionEntryToSupabasePayload(entry: ProductionEntry) {
     .filter((u) => u && !u.startsWith('blob:'));
 
   const payload: Record<string, unknown> = {
+    user_id: userId,
     entry_date: isoDate,
     item_name: entry.itemName,
     category: entry.category,
-    garment_type: entry.garmentType || entry.category || entry.itemName,
+    garment_type:
+      entry.garmentType ||
+      (entry.itemName && entry.category
+        ? `${entry.itemName} (${entry.category})`
+        : entry.itemName || entry.category),
     size: entry.size,
     sizes: entry.sizes,
     color: entry.color,
@@ -178,7 +264,6 @@ export function mapProductionEntryToSupabasePayload(entry: ProductionEntry) {
     import_batch_id: entry.importBatchId ?? null,
   };
 
-  // Preserve UUID if valid UUID
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(entry.id)) {
     payload.id = entry.id;
   }
@@ -187,9 +272,78 @@ export function mapProductionEntryToSupabasePayload(entry: ProductionEntry) {
 }
 
 /**
+ * Builds a Phase-1 compatible payload if the user's Supabase table has not yet
+ * been migrated with the newer Phase-2 columns.
+ */
+function mapProductionEntryToLegacySupabasePayload(
+  entry: ProductionEntry,
+  userId: string
+): Record<string, unknown> {
+  const isoDate =
+    ddMmYyyyToIsoInput(entry.date) || new Date().toISOString().slice(0, 10);
+  const photoUrls = entry.photos
+    .map((p) => p.storagePath || p.previewUrl)
+    .filter((u) => u && !u.startsWith('blob:'));
+
+  const packedDescription = packDescriptionWithMeta(entry.shortDescription, {
+    in: entry.itemName,
+    cat: entry.category,
+    sz: entry.sizes,
+    cl: entry.colors,
+    ws: entry.workStatus,
+    ss: entry.settlementStatus,
+    st: entry.startWorkTime
+      ? new Date(entry.startWorkTime).toISOString()
+      : null,
+    et: entry.endWorkTime
+      ? new Date(entry.endWorkTime).toISOString()
+      : null,
+    dur: entry.workDurationMinutes,
+    rw: entry.receivedWage,
+    pw: entry.pendingWage,
+    bid: entry.importBatchId,
+  });
+
+  const payload: Record<string, unknown> = {
+    user_id: userId,
+    entry_date: isoDate,
+    garment_type:
+      entry.itemName ||
+      entry.category ||
+      entry.garmentType ||
+      'পোশাক আইটেম',
+    size: entry.size || (entry.sizes ? entry.sizes.join(', ') : ''),
+    color: entry.color || (entry.colors ? entry.colors.join(', ') : ''),
+    dozens: entry.dozens ?? 0,
+    pieces: entry.pieces ?? 0,
+    rate_per_dozen: entry.ratePerDozen ?? 0,
+    total_wage: entry.totalWage ?? 0,
+    short_description: packedDescription,
+    photo_urls: photoUrls,
+  };
+
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(entry.id)) {
+    payload.id = entry.id;
+  }
+
+  return payload;
+}
+
+function isMissingColumnError(errMessage: string, errCode?: string): boolean {
+  return (
+    errCode === 'PGRST204' ||
+    errCode === '42703' ||
+    /Could not find the .* column/i.test(errMessage) ||
+    /column .* does not exist/i.test(errMessage)
+  );
+}
+
+/**
  * Fetches all production entries for the authenticated user in chronological order (newest first).
  */
-export async function fetchProductionEntriesFromSupabase(): Promise<{
+export async function fetchProductionEntriesFromSupabase(
+  explicitUserId?: string
+): Promise<{
   entries: ProductionEntry[];
   errorBn: string | null;
 }> {
@@ -197,14 +351,20 @@ export async function fetchProductionEntriesFromSupabase(): Promise<{
     return { entries: [], errorBn: null };
   }
 
-  const { data: sessionData } = await supabase.auth.getSession();
-  if (!sessionData.session?.user) {
+  let userId = explicitUserId;
+  if (!userId) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    userId = sessionData.session?.user?.id;
+  }
+
+  if (!userId) {
     return { entries: [], errorBn: null };
   }
 
   const { data, error } = await supabase
     .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
     .select('*')
+    .eq('user_id', userId)
     .order('entry_date', { ascending: false })
     .order('created_at', { ascending: false });
 
@@ -215,69 +375,88 @@ export async function fetchProductionEntriesFromSupabase(): Promise<{
     };
   }
 
-  const mapped = (data as SupabaseProductionRow[]).map(
+  const mapped = ((data || []) as SupabaseProductionRow[]).map(
     mapSupabaseRowToProductionEntry
   );
   return { entries: mapped, errorBn: null };
 }
 
 /**
- * Saves or updates a single production entry in Supabase if authenticated.
+ * Saves or updates a single production entry in Supabase.
+ * Automatically falls back to legacy column layout if extended columns are missing.
  */
 export async function saveProductionEntryToSupabase(
   entry: ProductionEntry
-): Promise<{ savedEntry: ProductionEntry; persistedToCloud: boolean; errorBn: string | null }> {
+): Promise<{
+  savedEntry: ProductionEntry;
+  persistedToCloud: boolean;
+  errorBn: string | null;
+}> {
   if (!supabase) {
-    return { savedEntry: entry, persistedToCloud: false, errorBn: null };
+    return {
+      savedEntry: entry,
+      persistedToCloud: false,
+      errorBn:
+        'সুপাবেস ক্লাউড সংযোগ কনফিগার করা নেই। স্থায়ীভাবে সংরক্ষণের জন্য সুপাবেস সংযোগ নিশ্চিত করুন।',
+    };
   }
 
   const { data: sessionData } = await supabase.auth.getSession();
-  if (!sessionData.session?.user) {
-    return { savedEntry: entry, persistedToCloud: false, errorBn: null };
-  }
+  const userId = sessionData.session?.user?.id;
 
-  const payload = mapProductionEntryToSupabasePayload(entry);
-  const isExistingUuid = Boolean(payload.id);
-
-  if (isExistingUuid) {
-    const { data, error } = await supabase
-      .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
-      .upsert(payload)
-      .select('*')
-      .single();
-
-    if (error) {
-      return {
-        savedEntry: entry,
-        persistedToCloud: false,
-        errorBn: `সুপাবেসে সংরক্ষণ ত্রুটি: ${error.message}`,
-      };
-    }
+  if (!userId) {
     return {
-      savedEntry: mapSupabaseRowToProductionEntry(data as SupabaseProductionRow),
-      persistedToCloud: true,
-      errorBn: null,
-    };
-  } else {
-    const { data, error } = await supabase
-      .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
-      .insert(payload)
-      .select('*')
-      .single();
-
-    if (error) {
-      return {
-        savedEntry: entry,
-        persistedToCloud: false,
-        errorBn: `সুপাবেসে সংরক্ষণ ত্রুটি: ${error.message}`,
-      };
-    }
-    return {
-      savedEntry: mapSupabaseRowToProductionEntry(data as SupabaseProductionRow),
-      persistedToCloud: true,
-      errorBn: null,
+      savedEntry: entry,
+      persistedToCloud: false,
+      errorBn:
+        'আপনি বর্তমানে লগইন করা নেই। পেজ রিফ্রেশের পরও ডেটা স্থায়ীভাবে ডাটাবেসে রাখতে উপরে "লগইন" বাটনে ক্লিক করে গুগল বা ইমেইল দিয়ে লগইন করুন।',
     };
   }
+
+  const fullPayload = mapProductionEntryToSupabasePayload(entry, userId);
+  const isExistingUuid = Boolean(fullPayload.id);
+
+  const attemptSave = async (payloadToUse: Record<string, unknown>) => {
+    if (isExistingUuid) {
+      return await supabase!
+        .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
+        .upsert(payloadToUse)
+        .eq('user_id', userId)
+        .select('*')
+        .single();
+    } else {
+      return await supabase!
+        .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
+        .insert(payloadToUse)
+        .select('*')
+        .single();
+    }
+  };
+
+  let { data, error } = await attemptSave(fullPayload);
+
+  if (error && isMissingColumnError(error.message, error.code)) {
+    const legacyPayload = mapProductionEntryToLegacySupabasePayload(entry, userId);
+    const retryRes = await attemptSave(legacyPayload);
+    data = retryRes.data;
+    error = retryRes.error;
+  }
+
+  if (error || !data) {
+    return {
+      savedEntry: entry,
+      persistedToCloud: false,
+      errorBn: `সুপাবেস ডাটাবেসে সংরক্ষণ ব্যর্থ হয়েছে: ${
+        error?.message || 'অজানা ত্রুটি'
+      }`,
+    };
+  }
+
+  return {
+    savedEntry: mapSupabaseRowToProductionEntry(data as SupabaseProductionRow),
+    persistedToCloud: true,
+    errorBn: null,
+  };
 }
 
 /**
@@ -291,10 +470,15 @@ export async function deleteProductionEntryFromSupabase(
     return { errorBn: null };
   }
 
+  const { data: sessionData } = await supabase.auth.getSession();
+  const userId = sessionData.session?.user?.id;
+  if (!userId) return { errorBn: null };
+
   const { error } = await supabase
     .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
     .delete()
-    .eq('id', id);
+    .eq('id', id)
+    .eq('user_id', userId);
 
   if (error) {
     return { errorBn: `সুপাবেস থেকে মুছে ফেলতে ত্রুটি: ${error.message}` };
@@ -324,7 +508,8 @@ export async function batchImportProductionEntriesToSupabase(
   }
 
   const { data: sessionData } = await supabase.auth.getSession();
-  if (!sessionData.session?.user) {
+  const userId = sessionData.session?.user?.id;
+  if (!userId) {
     return {
       importedEntries: stamped,
       persistedToCloud: false,
@@ -332,18 +517,30 @@ export async function batchImportProductionEntriesToSupabase(
     };
   }
 
-  const payloads = stamped.map(mapProductionEntryToSupabasePayload);
-  const { data, error } = await supabase
+  const payloads = stamped.map((e) => mapProductionEntryToSupabasePayload(e, userId));
+  let { data, error } = await supabase
     .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
     .insert(payloads)
     .select('*');
 
+  if (error && isMissingColumnError(error.message, error.code)) {
+    const legacyPayloads = stamped.map((e) =>
+      mapProductionEntryToLegacySupabasePayload(e, userId)
+    );
+    const retryRes = await supabase
+      .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
+      .insert(legacyPayloads)
+      .select('*');
+    data = retryRes.data;
+    error = retryRes.error;
+  }
+
   if (error) {
-    // Rollback any partial rows with this batchId
     await supabase
       .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
       .delete()
-      .eq('import_batch_id', batchId);
+      .eq('import_batch_id', batchId)
+      .eq('user_id', userId);
 
     return {
       importedEntries: [],
@@ -352,7 +549,7 @@ export async function batchImportProductionEntriesToSupabase(
     };
   }
 
-  const mapped = (data as SupabaseProductionRow[]).map(
+  const mapped = ((data || []) as SupabaseProductionRow[]).map(
     mapSupabaseRowToProductionEntry
   );
   return {
@@ -370,12 +567,14 @@ export async function rollbackImportBatchFromSupabase(
 ): Promise<{ errorBn: string | null }> {
   if (!supabase) return { errorBn: null };
   const { data: sessionData } = await supabase.auth.getSession();
-  if (!sessionData.session?.user) return { errorBn: null };
+  const userId = sessionData.session?.user?.id;
+  if (!userId) return { errorBn: null };
 
   const { error } = await supabase
     .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
     .delete()
-    .eq('import_batch_id', batchId);
+    .eq('import_batch_id', batchId)
+    .eq('user_id', userId);
 
   if (error) {
     return { errorBn: `রোলব্যাক ত্রুটি: ${error.message}` };

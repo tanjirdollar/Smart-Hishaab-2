@@ -122,44 +122,36 @@ const IMPORT_FIELD_DEFINITIONS: FieldMappingMeta[] = [
     ],
   },
   {
-    key: 'receivedWage',
-    labelBn: '১০. প্রাপ্ত মজুরি (Received Wage)',
-    aliases: ['received wage', 'received_wage', 'paid', 'received', 'প্রাপ্ত মজুরি', 'প্রাপ্ত টাকা'],
-  },
-  {
-    key: 'pendingWage',
-    labelBn: '১১. বকেয়া মজুরি (Pending Wage)',
-    aliases: ['pending wage', 'pending_wage', 'due', 'outstanding', 'বকেয়া মজুরি', 'বকেয়া'],
-  },
-  {
     key: 'startWorkTime',
-    labelBn: '১২. কাজ শুরুর সময় (Start Work Time)',
+    labelBn: '১০. কাজ শুরুর সময় (Start Work Time)',
     aliases: ['start work time', 'start_work_time', 'start time', 'কাজ শুরুর সময়', 'শুরু'],
   },
   {
     key: 'endWorkTime',
-    labelBn: '১৩. কাজ শেষের সময় (End Work Time)',
+    labelBn: '১১. কাজ শেষের সময় (End Work Time)',
     aliases: ['end work time', 'end_work_time', 'end time', 'কাজ শেষের সময়', 'শেষ'],
   },
   {
     key: 'workStatus',
-    labelBn: '১৪. কাজের অবস্থা (Work Status)',
+    labelBn: '১২. কাজের অবস্থা (Work Status)',
     aliases: ['work status', 'work_status', 'status', 'কাজের অবস্থা'],
   },
   {
     key: 'settlementStatus',
-    labelBn: '১৫. পরিশোধ স্ট্যাটাস (Settlement Status)',
+    labelBn: '১৩. রেট নিষ্পত্তি স্ট্যাটাস (Rate Settlement Status)',
     aliases: [
       'settlement status',
       'settlement_status',
+      'rate settlement',
       'payment status',
+      'রেট নিষ্পত্তি স্ট্যাটাস',
+      'রেট নিষ্পত্তি',
       'পরিশোধ স্ট্যাটাস',
-      'মজুরি পরিশোধ',
     ],
   },
   {
     key: 'shortDescription',
-    labelBn: '১৬. নোট / সংক্ষিপ্ত বিবরণ (Notes)',
+    labelBn: '১৪. নোট / সংক্ষিপ্ত বিবরণ (Notes)',
     aliases: ['notes', 'note', 'description', 'short_description', 'remarks', 'নোট', 'বিবরণ', 'মন্তব্য'],
   },
 ];
@@ -218,7 +210,7 @@ export const ImportDataPage: React.FC<ImportDataPageProps> = ({
   const [rollbackNoticeBn, setRollbackNoticeBn] = useState<string | null>(null);
 
   // Auto-detect column mapping when headers load
-  const autoMapHeaders = (headers: string[]) => {
+  const autoMapHeaders = (headers: string[], firstRowSample?: Record<string, string>) => {
     const nextMap: Record<ImportFieldKey, string> = {
       date: '',
       itemName: '',
@@ -250,37 +242,112 @@ export const ImportDataPage: React.FC<ImportDataPageProps> = ({
       }
     });
 
+    // If headers were auto-generated (কলাম_1, কলাম_2, ...) try inferring date and item columns from first row values
+    if (firstRowSample && !nextMap.date) {
+      for (const h of headers) {
+        const sampleVal = (firstRowSample[h] || '').trim();
+        if (!nextMap.date && normalizeToDDMMYYYY(sampleVal)) {
+          nextMap.date = h;
+        } else if (
+          !nextMap.itemName &&
+          sampleVal &&
+          isNaN(Number(toAsciiDigits(sampleVal))) &&
+          !normalizeToDDMMYYYY(sampleVal)
+        ) {
+          nextMap.itemName = h;
+        }
+      }
+    }
+
     setColumnMapping(nextMap);
   };
 
   const processWorkbook = (workbook: XLSX.WorkBook, sourceLabel: string) => {
     setParseErrorBn(null);
-    const firstSheetName = workbook.SheetNames[0];
-    if (!firstSheetName) {
+    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
       setParseErrorBn('ফাইলে কোনো বৈধ ওয়ার্কশিট পাওয়া যায়নি।');
       return;
     }
 
-    const worksheet = workbook.Sheets[firstSheetName];
-    const jsonMatrix = XLSX.utils.sheet_to_json<string[]>(worksheet, {
-      header: 1,
-      raw: false,
-      defval: '',
-    });
+    // Find the first worksheet that has non-empty cells across all sheet tabs
+    let chosenNonEmptyRows: string[][] = [];
+    let chosenSheetName = workbook.SheetNames[0];
 
-    if (!jsonMatrix || jsonMatrix.length < 2) {
-      setParseErrorBn(
-        'স্প্রেডশিটে হেডার এবং অন্তত ১টি ডেটা সারি থাকতে হবে। অনুগ্রহ করে ফাইলটি পরীক্ষা করুন।'
-      );
+    for (const sheetName of workbook.SheetNames) {
+      const ws = workbook.Sheets[sheetName];
+      if (!ws) continue;
+      const rawMatrix = XLSX.utils.sheet_to_json<unknown[]>(ws, {
+        header: 1,
+        raw: false,
+        defval: '',
+      });
+      const cleanedRows = (rawMatrix || [])
+        .map((row) =>
+          Array.isArray(row) ? row.map((c) => String(c ?? '').trim()) : []
+        )
+        .filter((row) => row.some((cell) => cell !== ''));
+
+      if (cleanedRows.length > chosenNonEmptyRows.length) {
+        chosenNonEmptyRows = cleanedRows;
+        chosenSheetName = sheetName;
+      }
+      if (cleanedRows.length >= 2) {
+        break;
+      }
+    }
+
+    if (chosenNonEmptyRows.length === 0) {
+      setParseErrorBn('স্প্রেডশিট ফাইলটি সম্পূর্ণ খালি। অনুগ্রহ করে ডেটাযুক্ত ফাইল নির্বাচন করুন।');
       return;
     }
 
-    const headers = (jsonMatrix[0] || [])
-      .map((h, i) => (String(h ?? '').trim() || `কলাম_${i + 1}`));
-    const dataRows: Record<string, string>[] = [];
+    // Skip single-cell title banner rows at the top if followed by a multi-column table
+    let headerRowIndex = 0;
+    while (
+      headerRowIndex < chosenNonEmptyRows.length - 1 &&
+      chosenNonEmptyRows[headerRowIndex].filter((c) => c !== '').length <= 1 &&
+      chosenNonEmptyRows[headerRowIndex + 1].filter((c) => c !== '').length >= 2
+    ) {
+      headerRowIndex++;
+    }
 
-    for (let r = 1; r < jsonMatrix.length; r++) {
-      const rowArr = jsonMatrix[r];
+    const candidateHeaderRow = chosenNonEmptyRows[headerRowIndex];
+    const remainingRows = chosenNonEmptyRows.slice(headerRowIndex + 1);
+
+    // Check if the first row is actually a data row (e.g., contains a valid date or only 1 row exists in the sheet)
+    const firstRowHasDate = candidateHeaderRow.some(
+      (cell) => normalizeToDDMMYYYY(cell) !== null
+    );
+
+    let headers: string[] = [];
+    let rawDataMatrix: string[][] = [];
+
+    if (remainingRows.length === 0 || firstRowHasDate) {
+      const maxCols = Math.max(
+        ...chosenNonEmptyRows.map((r) => r.length),
+        1
+      );
+      headers = Array.from({ length: maxCols }, (_, i) => `কলাম_${i + 1}`);
+      rawDataMatrix = chosenNonEmptyRows.slice(headerRowIndex);
+    } else {
+      const maxCols = Math.max(
+        candidateHeaderRow.length,
+        ...remainingRows.map((r) => r.length)
+      );
+      const seenHeaders = new Set<string>();
+      headers = Array.from({ length: maxCols }, (_, i) => {
+        const rawH = (candidateHeaderRow[i] || '').trim() || `কলাম_${i + 1}`;
+        if (seenHeaders.has(rawH)) {
+          return `${rawH}_${i + 1}`;
+        }
+        seenHeaders.add(rawH);
+        return rawH;
+      });
+      rawDataMatrix = remainingRows;
+    }
+
+    const dataRows: Record<string, string>[] = [];
+    for (const rowArr of rawDataMatrix) {
       if (!rowArr || rowArr.every((cell) => String(cell ?? '').trim() === '')) {
         continue;
       }
@@ -296,10 +363,14 @@ export const ImportDataPage: React.FC<ImportDataPageProps> = ({
       return;
     }
 
-    setUploadedFileName(sourceLabel);
+    setUploadedFileName(
+      workbook.SheetNames.length > 1
+        ? `${sourceLabel} (${chosenSheetName})`
+        : sourceLabel
+    );
     setSheetHeaders(headers);
     setRawRows(dataRows);
-    autoMapHeaders(headers);
+    autoMapHeaders(headers, dataRows[0]);
     setStep(2);
   };
 
@@ -310,9 +381,23 @@ export const ImportDataPage: React.FC<ImportDataPageProps> = ({
     setParseErrorBn(null);
 
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      const workbook = XLSX.read(arrayBuffer, { type: 'array', cellDates: true });
-      processWorkbook(workbook, file.name);
+      const lowerName = file.name.toLowerCase();
+      if (lowerName.endsWith('.csv') || file.type === 'text/csv') {
+        const rawText = await file.text();
+        const cleanText = rawText.replace(/^\uFEFF/, '');
+        const workbook = XLSX.read(cleanText, {
+          type: 'string',
+          cellDates: true,
+        });
+        processWorkbook(workbook, file.name);
+      } else {
+        const arrayBuffer = await file.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer, {
+          type: 'array',
+          cellDates: true,
+        });
+        processWorkbook(workbook, file.name);
+      }
     } catch (err) {
       setParseErrorBn(
         `ফাইলটি পড়তে ত্রুটি হয়েছে: ${
@@ -342,20 +427,25 @@ export const ImportDataPage: React.FC<ImportDataPageProps> = ({
 
     const spreadsheetId = match[1];
     const gidMatch = url.match(/gid=([0-9]+)/);
-    const gidParam = gidMatch ? `&gid=${gidMatch[1]}` : '';
-    const exportCsvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv${gidParam}`;
+    const gid = gidMatch ? gidMatch[1] : '0';
+
+    const gvizCsvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&gid=${gid}`;
+    const exportCsvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`;
 
     setIsLoadingSheet(true);
     setParseErrorBn(null);
     try {
-      const response = await fetch(exportCsvUrl);
+      let response = await fetch(gvizCsvUrl);
+      if (!response.ok) {
+        response = await fetch(exportCsvUrl);
+      }
       if (!response.ok) {
         throw new Error(
           'শিটটি পাবলিকলি শেয়ার করা নেই। Google Sheets-এ "Anyone with the link can view" করুন অথবা CSV/XLSX ডাউনলোড করে আপলোড করুন।'
         );
       }
-      const csvText = await response.text();
-      const workbook = XLSX.read(csvText, { type: 'string' });
+      const csvText = (await response.text()).replace(/^\uFEFF/, '');
+      const workbook = XLSX.read(csvText, { type: 'string', cellDates: true });
       processWorkbook(workbook, `Google_Sheet_${spreadsheetId.slice(0, 8)}.csv`);
     } catch (err) {
       setParseErrorBn(
@@ -371,10 +461,10 @@ export const ImportDataPage: React.FC<ImportDataPageProps> = ({
   // Download Sample CSV Template
   const handleDownloadSampleTemplate = () => {
     const sampleCsv = [
-      'Production Date,Item Name,Category,Size,Color,Quantity in Pieces,Quantity in Dozens,Rate per Dozen,Earned Wage,Received Wage,Pending Wage,Work Status,Settlement Status,Notes',
-      '02-11-2026,টি-শার্ট বডি জয়েন্ট (T-Shirt Body),নিটওয়্যার (Knitwear),M,সাদা (White),144,12,120,1440,1440,0,completed,settled,বায়ার স্টাইল ১০১',
-      '03-11-2026,পোলো শার্ট প্লাকেট ও কলার (Polo Shirt),নিটওয়্যার (Knitwear),L,নেভি ব্লু (Navy Blue),180,15,140,2100,0,2100,completed,pending,লাইন ০৪',
-      '04-11-2026,ডেনিম প্যান্ট সাইড ও ইনসিম (Denim Pant),ডেনিম (Denim),XL,কালো (Black),96,8,180,1440,0,1440,in_progress,pending,চলমান লট',
+      'Production Date,Item Name,Category,Size,Color,Quantity in Pieces,Quantity in Dozens,Rate per Dozen,Earned Wage,Work Status,Settlement Status,Notes',
+      '02-11-2026,বাচ্চাদের কটি,কটি,২৪,সাদা (White),300,25,35,875,completed,settled,বায়ার স্টাইল ১০১',
+      '03-11-2026,হাফ হাতা গোলগোলা,গোলগোলা,২৬,নেভি ব্লু (Navy Blue),120,10,40,400,completed,pending,লাইন ০৪',
+      '04-11-2026,ফুল হাতা শার্ট,শার্ট,২৮,কালো (Black),96,8,120,960,in_progress,pending,চলমান লট',
     ].join('\n');
 
     const blob = new Blob([sampleCsv], { type: 'text/csv;charset=utf-8;' });

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DesktopSidebar } from './components/layout/DesktopSidebar';
 import { MobileBottomNav } from './components/layout/MobileBottomNav';
 import { TopBar } from './components/layout/TopBar';
@@ -47,15 +47,56 @@ import {
   WageLedgerRecord,
 } from './types/models';
 
+const LOCAL_CACHE_KEY_PREFIX = 'smart_hisab_repo_cache_v2_';
+
+function loadCachedRepositoryState(userId: string | null): ApplicationRepositoryState | null {
+  try {
+    const key = `${LOCAL_CACHE_KEY_PREFIX}${userId || 'guest'}`;
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ApplicationRepositoryState>;
+    if (!parsed || !Array.isArray(parsed.productionEntries)) return null;
+    const initial = getInitialRepositoryState();
+    return {
+      productionEntries: parsed.productionEntries ?? initial.productionEntries,
+      wageRecords: parsed.wageRecords ?? initial.wageRecords,
+      paymentWithdrawals: parsed.paymentWithdrawals ?? initial.paymentWithdrawals,
+      loanRecords: parsed.loanRecords ?? initial.loanRecords,
+      fundRecords: parsed.fundRecords ?? initial.fundRecords,
+      incomeExpenseRecords: parsed.incomeExpenseRecords ?? initial.incomeExpenseRecords,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedRepositoryState(
+  userId: string | null,
+  state: ApplicationRepositoryState
+): void {
+  try {
+    const key = `${LOCAL_CACHE_KEY_PREFIX}${userId || 'guest'}`;
+    localStorage.setItem(key, JSON.stringify(state));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
 export default function App() {
   const [activeModule, setActiveModule] = useState<ModuleId>(ModuleId.DASHBOARD);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const [theme, setTheme] = useState<ThemeMode>('light');
   const [showLoginView, setShowLoginView] = useState<boolean>(false);
   const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(null);
+  const [isAuthInitialized, setIsAuthInitialized] = useState<boolean>(!supabase);
   const [isLoadingCloudData, setIsLoadingCloudData] = useState<boolean>(false);
+  const [cloudSyncBannerBn, setCloudSyncBannerBn] = useState<string | null>(null);
 
-  const [repo, setRepo] = useState<ApplicationRepositoryState>(getInitialRepositoryState);
+  const [repo, setRepo] = useState<ApplicationRepositoryState>(() => {
+    return loadCachedRepositoryState(null) || getInitialRepositoryState();
+  });
+
+  const isSyncingRef = useRef(false);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -66,52 +107,126 @@ export default function App() {
     }
   }, [theme]);
 
-  // Load authenticated user session & fetch Supabase production records
+  // Persist mirror cache whenever repo changes after initialization
   useEffect(() => {
-    if (!supabase) return;
+    if (!isAuthInitialized) return;
+    saveCachedRepositoryState(currentUser?.id ?? null, repo);
+  }, [repo, currentUser?.id, isAuthInitialized]);
 
-    const loadCloudRecords = async () => {
-      setIsLoadingCloudData(true);
-      try {
-        const { entries } = await fetchProductionEntriesFromSupabase();
-        if (entries.length > 0) {
-          setRepo((prev) => ({
-            ...prev,
-            productionEntries: entries,
-          }));
+  const loadCloudRecordsForUser = useCallback(async (user: AuthenticatedUser) => {
+    if (!supabase || isSyncingRef.current) return;
+    isSyncingRef.current = true;
+    setIsLoadingCloudData(true);
+    setCloudSyncBannerBn(null);
+
+    try {
+      // Load any cached user state first so we can sync any unsaved local records
+      const userCached = loadCachedRepositoryState(user.id);
+      const guestCached = loadCachedRepositoryState(null);
+
+      const { entries: cloudEntries, errorBn } =
+        await fetchProductionEntriesFromSupabase(user.id);
+
+      if (errorBn) {
+        setCloudSyncBannerBn(errorBn);
+        if (userCached && userCached.productionEntries.length > 0) {
+          setRepo(userCached);
         }
-      } finally {
-        setIsLoadingCloudData(false);
+        return;
       }
-    };
 
-    supabase.auth.getSession().then(({ data }) => {
+      // Check if there are any non-UUID entries created before login or during offline that need to be synced to Supabase
+      const localCandidates = [
+        ...(userCached?.productionEntries || []),
+        ...(guestCached?.productionEntries || []),
+      ];
+      const unsyncedEntries = localCandidates.filter(
+        (item) =>
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+            item.id
+          )
+      );
+
+      let finalCloudEntries = cloudEntries;
+
+      if (unsyncedEntries.length > 0) {
+        for (const unsynced of unsyncedEntries) {
+          await saveProductionEntryToSupabase(unsynced);
+        }
+        const refreshed = await fetchProductionEntriesFromSupabase(user.id);
+        if (!refreshed.errorBn) {
+          finalCloudEntries = refreshed.entries;
+        }
+        // Clear guest unsynced entries after migrating to user's Supabase account
+        if (guestCached && guestCached.productionEntries.length > 0) {
+          saveCachedRepositoryState(null, {
+            ...guestCached,
+            productionEntries: [],
+          });
+        }
+      }
+
+      setRepo((prev) => ({
+        ...(userCached || prev),
+        productionEntries: finalCloudEntries,
+      }));
+    } finally {
+      setIsLoadingCloudData(false);
+      isSyncingRef.current = false;
+    }
+  }, []);
+
+  // Wait for Supabase auth session initialization on mount and page refresh
+  useEffect(() => {
+    if (!supabase) {
+      setIsAuthInitialized(true);
+      return;
+    }
+
+    let isMounted = true;
+
+    supabase.auth.getSession().then(async ({ data }) => {
+      if (!isMounted) return;
       const usr = data.session?.user ?? null;
       setCurrentUser(usr);
+      setIsAuthInitialized(true);
       if (usr) {
-        loadCloudRecords();
+        await loadCloudRecordsForUser(usr);
+      } else {
+        const guestCache = loadCachedRepositoryState(null);
+        if (guestCache) {
+          setRepo(guestCache);
+        }
       }
     });
 
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
-      const usr = session?.user ?? null;
-      setCurrentUser(usr);
-      if (usr) {
-        loadCloudRecords();
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (!isMounted) return;
+        const usr = session?.user ?? null;
+        setCurrentUser(usr);
+        setIsAuthInitialized(true);
+        if (usr) {
+          loadCloudRecordsForUser(usr);
+        }
       }
-    });
+    );
 
     return () => {
+      isMounted = false;
       authListener.subscription.unsubscribe();
     };
-  }, []);
+  }, [loadCloudRecordsForUser]);
 
   const handleToggleTheme = () => {
     setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
   };
 
-  // Production CRUD handlers (persists to Supabase when logged in + updates state immediately)
-  const handleSaveProduction = async (entry: ProductionEntry, rawFiles?: File[]) => {
+  // Production CRUD handlers: Awaits confirmed Supabase save and returns status to caller
+  const handleSaveProduction = async (
+    entry: ProductionEntry,
+    rawFiles?: File[]
+  ): Promise<{ persistedToCloud: boolean; errorBn: string | null }> => {
     let updatedPhotos = entry.photos;
 
     if (rawFiles && rawFiles.length > 0) {
@@ -135,29 +250,40 @@ export default function App() {
       photos: updatedPhotos,
     };
 
-    const { savedEntry } = await saveProductionEntryToSupabase(entryWithPhotos);
+    const { savedEntry, persistedToCloud, errorBn } =
+      await saveProductionEntryToSupabase(entryWithPhotos);
 
     setRepo((prev) => {
       const exists = prev.productionEntries.some(
         (item) => item.id === entry.id || item.id === savedEntry.id
       );
-      return {
+      const nextEntries = exists
+        ? prev.productionEntries.map((item) =>
+            item.id === entry.id || item.id === savedEntry.id ? savedEntry : item
+          )
+        : [savedEntry, ...prev.productionEntries];
+
+      const nextState = {
         ...prev,
-        productionEntries: exists
-          ? prev.productionEntries.map((item) =>
-              item.id === entry.id || item.id === savedEntry.id ? savedEntry : item
-            )
-          : [savedEntry, ...prev.productionEntries],
+        productionEntries: nextEntries,
       };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
+      return nextState;
     });
+
+    return { persistedToCloud, errorBn };
   };
 
   const handleDeleteProduction = async (id: string) => {
     await deleteProductionEntryFromSupabase(id);
-    setRepo((prev) => ({
-      ...prev,
-      productionEntries: prev.productionEntries.filter((item) => item.id !== id),
-    }));
+    setRepo((prev) => {
+      const nextState = {
+        ...prev,
+        productionEntries: prev.productionEntries.filter((item) => item.id !== id),
+      };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
+      return nextState;
+    });
   };
 
   // Batch Import & Rollback handlers
@@ -165,7 +291,10 @@ export default function App() {
     entriesToImport: ProductionEntry[],
     batchId: string
   ) => {
-    const res = await batchImportProductionEntriesToSupabase(entriesToImport, batchId);
+    const res = await batchImportProductionEntriesToSupabase(
+      entriesToImport,
+      batchId
+    );
     if (res.errorBn) {
       return {
         importedCount: 0,
@@ -175,10 +304,14 @@ export default function App() {
     }
 
     const added = res.importedEntries;
-    setRepo((prev) => ({
-      ...prev,
-      productionEntries: [...added, ...prev.productionEntries],
-    }));
+    setRepo((prev) => {
+      const nextState = {
+        ...prev,
+        productionEntries: [...added, ...prev.productionEntries],
+      };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
+      return nextState;
+    });
 
     return {
       importedCount: added.length,
@@ -189,12 +322,16 @@ export default function App() {
 
   const handleRollbackImportBatch = async (batchId: string) => {
     const res = await rollbackImportBatchFromSupabase(batchId);
-    setRepo((prev) => ({
-      ...prev,
-      productionEntries: prev.productionEntries.filter(
-        (e) => e.importBatchId !== batchId
-      ),
-    }));
+    setRepo((prev) => {
+      const nextState = {
+        ...prev,
+        productionEntries: prev.productionEntries.filter(
+          (e) => e.importBatchId !== batchId
+        ),
+      };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
+      return nextState;
+    });
     return res;
   };
 
@@ -225,7 +362,9 @@ export default function App() {
       return {
         ...prev,
         paymentWithdrawals: exists
-          ? prev.paymentWithdrawals.map((item) => (item.id === record.id ? record : item))
+          ? prev.paymentWithdrawals.map((item) =>
+              item.id === record.id ? record : item
+            )
           : [record, ...prev.paymentWithdrawals],
       };
     });
@@ -285,7 +424,9 @@ export default function App() {
       return {
         ...prev,
         incomeExpenseRecords: exists
-          ? prev.incomeExpenseRecords.map((item) => (item.id === tx.id ? tx : item))
+          ? prev.incomeExpenseRecords.map((item) =>
+              item.id === tx.id ? tx : item
+            )
           : [tx, ...prev.incomeExpenseRecords],
       };
     });
@@ -294,13 +435,18 @@ export default function App() {
   const handleDeleteTransaction = (id: string) => {
     setRepo((prev) => ({
       ...prev,
-      incomeExpenseRecords: prev.incomeExpenseRecords.filter((item) => item.id !== id),
+      incomeExpenseRecords: prev.incomeExpenseRecords.filter(
+        (item) => item.id !== id
+      ),
     }));
   };
 
   const dashboardMetrics = useMemo(() => computeDashboardMetrics(repo), [repo]);
   const weeklySeries = useMemo(() => computeCurrentWeekSeries(repo), [repo]);
-  const monthlySeries = useMemo(() => computeMonthlyIncomeExpenseSeries(repo), [repo]);
+  const monthlySeries = useMemo(
+    () => computeMonthlyIncomeExpenseSeries(repo),
+    [repo]
+  );
 
   if (showLoginView) {
     return (
@@ -399,7 +545,11 @@ export default function App() {
       case ModuleId.DATA_MANAGEMENT:
         return (
           <DataManagementPage
-            onResetSessionPreviewData={() => setRepo(getInitialRepositoryState())}
+            onResetSessionPreviewData={() => {
+              const empty = getInitialRepositoryState();
+              setRepo(empty);
+              saveCachedRepositoryState(currentUser?.id ?? null, empty);
+            }}
           />
         );
       case ModuleId.SETTINGS:
@@ -440,6 +590,12 @@ export default function App() {
         {isLoadingCloudData && (
           <div className="bg-teal-50 dark:bg-teal-950/60 border-b border-teal-200 dark:border-teal-800 px-4 py-2 text-xs text-teal-800 dark:text-teal-200 text-center">
             সুপাবেস ডাটাবেস থেকে প্রোডাকশন তথ্য লোড হচ্ছে...
+          </div>
+        )}
+
+        {cloudSyncBannerBn && (
+          <div className="bg-amber-50 dark:bg-amber-950/60 border-b border-amber-200 dark:border-amber-800 px-4 py-2 text-xs text-amber-800 dark:text-amber-200 text-center">
+            {cloudSyncBannerBn}
           </div>
         )}
 
