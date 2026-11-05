@@ -1,6 +1,7 @@
 import React from 'react';
 import { Moon, Scissors, Sun, UserCheck } from 'lucide-react';
 import { NAVIGATION_ITEMS } from '../../config/navigation';
+import { AuthenticatedUser } from '../../lib/supabase/client';
 import { ModuleId, ThemeMode } from '../../types/models';
 
 export interface TopBarProps {
@@ -9,6 +10,7 @@ export interface TopBarProps {
   theme: ThemeMode;
   onToggleTheme: () => void;
   onOpenLoginView: () => void;
+  currentUser: AuthenticatedUser | null;
 }
 
 /**
@@ -23,6 +25,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   theme,
   onToggleTheme,
   onOpenLoginView,
+  currentUser,
 }) => {
   const currentNav =
     NAVIGATION_ITEMS.find((item) => item.id === activeModule) ?? NAVIGATION_ITEMS[0];
@@ -94,7 +97,13 @@ export const TopBar: React.FC<TopBarProps> = ({
           className="min-h-[44px] px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-slate-100 dark:hover:bg-white/90 text-white dark:text-slate-900 text-xs sm:text-sm font-semibold inline-flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
           <UserCheck className="w-4 h-4" />
-          <span>লগইন পৃষ্ঠা</span>
+          <span className="truncate max-w-[140px]">
+            {currentUser
+              ? (currentUser.user_metadata?.full_name as string | undefined) ||
+                currentUser.email ||
+                'লগইনকৃত একাউন্ট'
+              : 'লগইন পৃষ্ঠা'}
+          </span>
         </button>
       </div>
     </header>

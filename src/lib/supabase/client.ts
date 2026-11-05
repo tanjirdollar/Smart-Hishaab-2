@@ -1,17 +1,30 @@
+import { createClient, SupabaseClient, User } from '@supabase/supabase-js';
 import { SupabaseConnectionState } from '../../types/models';
 
 /**
- * Supabase Architecture Layer (Phase 1 Foundation)
- *
- * This module prepares the clean structure for Supabase Authentication (Google OAuth),
- * PostgreSQL Database tables, and Storage buckets ('production-photos').
- *
- * IMPORTANT: Does not fake cloud synchronization or use localStorage as a permanent database.
+ * Supabase Client & Google OAuth Authentication Layer
  */
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY ||
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY) as string | undefined;
+
+const isConfigured = Boolean(
+  supabaseUrl &&
+    supabaseUrl.trim().length > 0 &&
+    supabaseAnonKey &&
+    supabaseAnonKey.trim().length > 0
+);
+
+export const supabase: SupabaseClient | null = isConfigured
+  ? createClient(supabaseUrl!.trim(), supabaseAnonKey!.trim(), {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    })
+  : null;
 
 export const SUPABASE_TABLES = {
   OPERATOR_PROFILES: 'operator_profiles',
@@ -28,43 +41,68 @@ export const SUPABASE_STORAGE_BUCKETS = {
 } as const;
 
 export function getSupabaseConnectionState(): SupabaseConnectionState {
-  const isConfigured = Boolean(
-    supabaseUrl &&
-      supabaseUrl.trim().length > 0 &&
-      supabaseAnonKey &&
-      supabaseAnonKey.trim().length > 0
-  );
-
   return {
     isConfigured,
-    projectUrl: isConfigured ? supabaseUrl! : null,
+    projectUrl: isConfigured ? supabaseUrl!.trim() : null,
     authProvider: 'google',
     storageBucket: SUPABASE_STORAGE_BUCKETS.PRODUCTION_PHOTOS,
     statusMessageBn: isConfigured
-      ? 'সুপাবেস ক্লাউড কনফিগারেশন সনাক্ত হয়েছে'
-      : 'প্রথম ধাপ (UI ফাউন্ডেশন): সুপাবেস ডাটাবেস এখনও সংযুক্ত করা হয়নি',
+      ? 'সুপাবেস ক্লাউড কনফিগারেশন সক্রিয় রয়েছে'
+      : 'সুপাবেস ডাটাবেস এখনও সংযুক্ত করা হয়নি (VITE_SUPABASE_URL ও Key সেট করুন)',
   };
 }
 
 /**
- * Placeholder contract for Google OAuth sign-in via Supabase Auth.
- * Never implements insecure authentication shortcuts.
+ * Initiates Google OAuth login via Supabase Auth.
  */
 export async function signInWithGoogleSupabase(): Promise<{
   ok: boolean;
   messageBn: string;
 }> {
-  const state = getSupabaseConnectionState();
-  if (!state.isConfigured) {
+  if (!supabase) {
     return {
       ok: false,
       messageBn:
-        'সুপাবেস (Supabase) প্রজেক্ট URL এবং Anon Key এখনও কনফিগার করা হয়নি। পরবর্তী ধাপে সুপাবেস সংযুক্ত হলে Google একাউন্টের মাধ্যমে নিরাপদ লগইন কার্যকর হবে।',
+        'সুপাবেস (Supabase) প্রজেক্ট URL এবং Publishable/Anon Key এখনও কনফিগার করা হয়নি। Vercel-এ VITE_SUPABASE_URL এবং VITE_SUPABASE_PUBLISHABLE_KEY সেট করে Redeploy করুন।',
     };
+  }
+
+  const redirectTo = window.location.origin;
+
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo,
+      queryParams: {
+        access_type: 'offline',
+        prompt: 'consent',
+      },
+    },
+  });
+
+  if (error) {
+    return {
+      ok: false,
+      messageBn: `Google লগইন ত্রুটি: ${error.message}`,
+    };
+  }
+
+  if (data?.url) {
+    window.location.href = data.url;
   }
 
   return {
     ok: true,
-    messageBn: 'সুপাবেস Google OAuth রিডাইরেক্টের জন্য প্রস্তুত।',
+    messageBn: 'Google লগইন পাতায় রিডাইরেক্ট করা হচ্ছে...',
   };
 }
+
+/**
+ * Signs out the currently authenticated user.
+ */
+export async function signOutSupabase(): Promise<void> {
+  if (!supabase) return;
+  await supabase.auth.signOut();
+}
+
+export type AuthenticatedUser = User;

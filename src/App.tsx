@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import { DesktopSidebar } from './components/layout/DesktopSidebar';
 import { MobileBottomNav } from './components/layout/MobileBottomNav';
 import { TopBar } from './components/layout/TopBar';
+import { AuthenticatedUser, supabase } from './lib/supabase/client';
 import { DashboardPage } from './pages/DashboardPage';
 import { DataManagementPage } from './pages/DataManagementPage';
 import { FundManagementPage } from './pages/FundManagementPage';
@@ -41,6 +42,7 @@ export default function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const [theme, setTheme] = useState<ThemeMode>('light');
   const [showLoginView, setShowLoginView] = useState<boolean>(false);
+  const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(null);
 
   // In-memory repository state prepared for Supabase binding (never persisted in localStorage)
   const [repo, setRepo] = useState<ApplicationRepositoryState>(getInitialRepositoryState);
@@ -53,6 +55,22 @@ export default function App() {
       root.classList.remove('dark');
     }
   }, [theme]);
+
+  useEffect(() => {
+    if (!supabase) return;
+
+    supabase.auth.getSession().then(({ data }) => {
+      setCurrentUser(data.session?.user ?? null);
+    });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setCurrentUser(session?.user ?? null);
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
 
   const handleToggleTheme = () => {
     setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
@@ -179,7 +197,12 @@ export default function App() {
   };
 
   if (showLoginView) {
-    return <LoginPage onReturnToWorkspace={() => setShowLoginView(false)} />;
+    return (
+      <LoginPage
+        currentUser={currentUser}
+        onReturnToWorkspace={() => setShowLoginView(false)}
+      />
+    );
   }
 
   const renderActivePage = () => {
@@ -288,6 +311,7 @@ export default function App() {
           theme={theme}
           onToggleTheme={handleToggleTheme}
           onOpenLoginView={() => setShowLoginView(true)}
+          currentUser={currentUser}
         />
 
         <main className="flex-1 px-4 sm:px-6 lg:px-8 py-6 pb-24 lg:pb-10 max-w-7xl w-full mx-auto">
