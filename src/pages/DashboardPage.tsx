@@ -1,555 +1,607 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  ArrowDownLeft,
   ArrowRight,
-  ArrowUpRight,
   Banknote,
-  BarChart3,
-  CalendarCheck,
-  CalendarDays,
-  CalendarRange,
-  ClipboardCheck,
-  Clock,
-  FileSpreadsheet,
+  Calendar,
+  CreditCard,
   HandCoins,
-  Layers,
   PiggyBank,
   Plus,
   Scissors,
   TrendingUp,
-  Wallet,
 } from 'lucide-react';
 import {
+  QuickEntrySectionType,
+  QuickMultiSectionEntryModal,
+} from '../components/ui/QuickMultiSectionEntryModal';
+import { StatusBadge } from '../components/ui/StatusBadge';
+import {
   DashboardSummaryMetrics,
+  FundRecord,
   IncomeExpenseRecord,
+  LoanRecord,
   ModuleId,
   MonthlyIncomeExpensePoint,
   PaymentWithdrawalRecord,
   ProductionEntry,
   WeeklyEarningsPoint,
 } from '../types/models';
-import {
-  formatDateDDMMYYYY,
-  formatDozensBn,
-  formatTaka,
-  toBengaliDigits,
-} from '../utils/formatters';
+import { formatCurrencyBDT, formatNumberBn } from '../utils/formatters';
 import {
   computeMultiWeekComparison,
-  getWeekEndThursday,
+  computeSaturdayToThursdayWeekSummary,
   getWeekStartSaturday,
 } from '../utils/weeklyCalendar';
-import { EmptyDataState } from '../components/ui/EmptyDataState';
-import { PageHeader } from '../components/ui/PageHeader';
-import { SummaryCard } from '../components/ui/SummaryCard';
 
-export interface DashboardPageProps {
+interface DashboardPageProps {
   metrics: DashboardSummaryMetrics;
   recentProduction: ProductionEntry[];
   paymentWithdrawals: PaymentWithdrawalRecord[];
   recentTransactions: IncomeExpenseRecord[];
+  funds: FundRecord[];
+  loans: LoanRecord[];
   weeklySeries: WeeklyEarningsPoint[];
   monthlySeries: MonthlyIncomeExpensePoint[];
   onNavigate: (module: ModuleId) => void;
+  onSaveProduction: (
+    entry: ProductionEntry
+  ) => Promise<{ persistedToCloud: boolean; errorBn: string | null }>;
+  onSaveWithdrawal: (record: PaymentWithdrawalRecord) => void;
+  onSaveFund: (fund: FundRecord) => void;
+  onSaveLoan: (loan: LoanRecord) => void;
+  onSaveTransaction: (tx: IncomeExpenseRecord) => void;
 }
+
+type ChartGranularity = 'daily' | 'weekly';
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({
   metrics,
   recentProduction,
   paymentWithdrawals,
-  recentTransactions,
+  funds,
+  loans,
   weeklySeries,
-  monthlySeries,
   onNavigate,
+  onSaveProduction,
+  onSaveWithdrawal,
+  onSaveFund,
+  onSaveLoan,
+  onSaveTransaction,
 }) => {
-  const currentSat = useMemo(() => getWeekStartSaturday(new Date()), []);
-  const currentThu = useMemo(() => getWeekEndThursday(currentSat), [currentSat]);
+  const [chartMode, setChartMode] = useState<ChartGranularity>('daily');
+  const [quickModalOpen, setQuickModalOpen] = useState<boolean>(false);
+  const [quickModalSection, setQuickModalSection] =
+    useState<QuickEntrySectionType>('withdrawal');
 
-  // 4-week trend for Dashboard Weekly Production Trend
-  const fourWeekTrend = useMemo(
+  const openQuickEntry = (section: QuickEntrySectionType) => {
+    setQuickModalSection(section);
+    setQuickModalOpen(true);
+  };
+
+  const currentSaturday = useMemo(() => getWeekStartSaturday(new Date()), []);
+
+  const currentWeek = useMemo(
     () =>
-      computeMultiWeekComparison(
-        currentSat,
-        4,
+      computeSaturdayToThursdayWeekSummary(
+        currentSaturday,
         recentProduction,
         paymentWithdrawals
       ),
-    [currentSat, recentProduction, paymentWithdrawals]
+    [currentSaturday, recentProduction, paymentWithdrawals]
   );
 
-  // Pending wage entries (where settlementStatus === 'pending' and totalWage > 0)
-  const pendingWageEntries = useMemo(
-    () =>
-      recentProduction.filter(
-        (e) => e.settlementStatus === 'pending' && (e.totalWage ?? 0) > 0
-      ),
-    [recentProduction]
-  );
+  const recentWeeksChartData = useMemo(() => {
+    const weeks = computeMultiWeekComparison(
+      currentSaturday,
+      4,
+      recentProduction,
+      paymentWithdrawals
+    );
+    return weeks.map((w) => ({
+      label: w.saturdayDateDDMMYYYY.slice(0, 5),
+      earnedAmount: w.totalEarnedWages,
+      receivedAmount: w.totalReceivedWages,
+      pieces: w.totalPieces,
+    }));
+  }, [currentSaturday, recentProduction, paymentWithdrawals]);
 
-  const maxDailyPieces = useMemo(
-    () => Math.max(1, ...weeklySeries.map((d) => d.pieces)),
+  const maxDailyEarned = useMemo(
+    () => Math.max(1, ...weeklySeries.map((d) => d.earnedAmount)),
     [weeklySeries]
   );
 
-  const maxTrendPieces = useMemo(
-    () => Math.max(1, ...fourWeekTrend.map((w) => w.totalPieces)),
-    [fourWeekTrend]
+  const maxWeeklyEarned = useMemo(
+    () =>
+      Math.max(
+        1,
+        ...recentWeeksChartData.map((w) =>
+          Math.max(w.earnedAmount, w.receivedAmount)
+        )
+      ),
+    [recentWeeksChartData]
   );
 
   return (
-    <div className="space-y-7 w-full max-w-full overflow-x-hidden">
-      <PageHeader
-        moduleIndexBn="০১. প্রধান মডিউল · ড্যাশবোর্ড"
-        titleBn="স্মার্ট হিসাব — ড্যাশবোর্ড সারসংক্ষেপ"
-        subtitleBn="শনিবার থেকে বৃহস্পতিবার সাপ্তাহিক ক্যালেন্ডার অনুযায়ী প্রোডাকশন, অর্জিত ও প্রাপ্ত মজুরি, বকেয়া পাওনা এবং ব্যক্তিগত অর্থ ব্যবস্থাপনার চিত্র"
-        primaryActionLabelBn="নতুন প্রোডাকশন যোগ করুন"
-        primaryActionIcon={<Plus className="w-4 h-4" />}
-        onPrimaryAction={() => onNavigate(ModuleId.PRODUCTION)}
-        secondaryActionLabelBn="Google Sheets / Excel ইমপোর্ট"
-        secondaryActionIcon={<FileSpreadsheet className="w-4 h-4" />}
-        onSecondaryAction={() => onNavigate(ModuleId.IMPORT_DATA)}
-      />
-
-      {/* Section 1: This Week's Highlight Cards (Saturday to Thursday) */}
-      <section aria-labelledby="this-week-summary-heading" className="space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
-          <h2
-            id="this-week-summary-heading"
-            className="text-base font-bold text-slate-900 dark:text-slate-100"
-          >
-            চলতি সপ্তাহের প্রোডাকশন ও মজুরি সারসংক্ষেপ (শনিবার — বৃহস্পতিবার)
-          </h2>
+    <div className="space-y-4">
+      {/* Section-Based Quick Entry Selector Bar */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl p-3 sm:p-3.5 shadow-2xs">
+        <div className="flex items-center justify-between gap-2 mb-2.5">
+          <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+            <Plus className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+            নতুন এন্ট্রি যোগ করুন (সেকশন নির্বাচন করুন)
+          </span>
           <button
             type="button"
-            onClick={() => onNavigate(ModuleId.WEEKLY_REPORT)}
-            className="text-xs font-semibold text-teal-700 dark:text-teal-400 hover:underline inline-flex items-center gap-1 cursor-pointer self-start sm:self-auto"
+            onClick={() => openQuickEntry('withdrawal')}
+            className="text-[11px] font-bold text-teal-700 dark:text-teal-400 hover:underline cursor-pointer"
           >
-            <span>
-              সপ্তাহ: {formatDateDDMMYYYY(currentSat, true)} হতে{' '}
-              {formatDateDDMMYYYY(currentThu, true)} · পূর্ণাঙ্গ সাপ্তাহিক রিপোর্ট
-            </span>
-            <ArrowRight className="w-3.5 h-3.5" />
+            সকল অপশন →
           </button>
         </div>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+          <button
+            type="button"
+            onClick={() => openQuickEntry('withdrawal')}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-50/80 dark:bg-emerald-950/40 hover:bg-emerald-100/80 dark:hover:bg-emerald-900/50 border border-emerald-200/80 dark:border-emerald-800/70 text-emerald-900 dark:text-emerald-200 text-xs font-bold transition-colors cursor-pointer"
+          >
+            <Banknote className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+            <span className="truncate">বিল উত্তোলন</span>
+          </button>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
-          {/* 1. This Week's Total Production */}
-          <SummaryCard
-            titleBn="এই সপ্তাহের মোট প্রোডাকশন"
-            amount={null}
-            customValueBn={`${toBengaliDigits(
-              metrics.thisWeekTotalPieces
-            )} পিস (${formatDozensBn(metrics.thisWeekTotalDozens)} ডজন)`}
-            subtitleBn="শনিবার থেকে বৃহস্পতিবারের মোট সেলাই"
-            icon={<Layers className="w-5 h-5" />}
-            tone="accent"
-          />
+          <button
+            type="button"
+            onClick={() => openQuickEntry('fund')}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl bg-teal-50/80 dark:bg-teal-950/40 hover:bg-teal-100/80 dark:hover:bg-teal-900/50 border border-teal-200/80 dark:border-teal-800/70 text-teal-900 dark:text-teal-200 text-xs font-bold transition-colors cursor-pointer"
+          >
+            <PiggyBank className="w-4 h-4 text-teal-600 dark:text-teal-400 shrink-0" />
+            <span className="truncate">ফান্ড খরচ / জমা</span>
+          </button>
 
-          {/* 2. This Week's Earned Wages */}
-          <SummaryCard
-            titleBn="এই সপ্তাহের অর্জিত মজুরি"
-            amount={metrics.weekEarnedWages}
-            subtitleBn="চলতি সপ্তাহের প্রোডাকশন হতে অর্জিত"
-            icon={<CalendarRange className="w-5 h-5" />}
-            tone="positive"
-          />
+          <button
+            type="button"
+            onClick={() => openQuickEntry('loan')}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-50/80 dark:bg-amber-950/40 hover:bg-amber-100/80 dark:hover:bg-amber-900/50 border border-amber-200/80 dark:border-amber-800/70 text-amber-900 dark:text-amber-200 text-xs font-bold transition-colors cursor-pointer"
+          >
+            <HandCoins className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span className="truncate">লোন পরিশোধ</span>
+          </button>
 
-          {/* 3. This Week's Received Wages */}
-          <SummaryCard
-            titleBn="এই সপ্তাহের প্রাপ্ত মজুরি"
-            amount={metrics.thisWeekReceivedWages}
-            subtitleBn={
-              metrics.thisWeekAdvanceBalance > 0
-                ? `অগ্রিম স্থিতি: ${formatTaka(metrics.thisWeekAdvanceBalance, true)}`
-                : 'এই সপ্তাহে নগদ/বিকাশে প্রাপ্ত টাকা'
-            }
-            icon={<Banknote className="w-5 h-5" />}
-            tone="accent"
-          />
+          <button
+            type="button"
+            onClick={() => openQuickEntry('expense')}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl bg-rose-50/80 dark:bg-rose-950/40 hover:bg-rose-100/80 dark:hover:bg-rose-900/50 border border-rose-200/80 dark:border-rose-800/70 text-rose-900 dark:text-rose-200 text-xs font-bold transition-colors cursor-pointer"
+          >
+            <CreditCard className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+            <span className="truncate">ব্যক্তিগত ব্যয় / আয়</span>
+          </button>
 
-          {/* 4. This Week's Outstanding Wages */}
-          <SummaryCard
-            titleBn="এই সপ্তাহের বকেয়া মজুরি"
-            amount={metrics.thisWeekOutstandingWages}
-            subtitleBn="চলতি সপ্তাহের অপরিশোধিত পাওনা"
-            icon={<ClipboardCheck className="w-5 h-5" />}
-            tone="warning"
-          />
-
-          {/* 5. Working Days This Week */}
-          <SummaryCard
-            titleBn="এই সপ্তাহের কর্মদিবস"
-            amount={null}
-            customValueBn={`${toBengaliDigits(metrics.thisWeekWorkingDays)} / ৬ দিন`}
-            subtitleBn="শুক্রবার ব্যতীত সক্রিয় কাজের দিন"
-            icon={<Clock className="w-5 h-5" />}
-            tone="default"
-          />
+          <button
+            type="button"
+            onClick={() => openQuickEntry('production')}
+            className="col-span-2 sm:col-span-1 flex items-center justify-center sm:justify-start gap-2 px-3 py-2 rounded-xl bg-slate-900 dark:bg-teal-700 hover:bg-slate-800 dark:hover:bg-teal-600 text-white text-xs font-bold transition-colors cursor-pointer"
+          >
+            <Scissors className="w-4 h-4 shrink-0" />
+            <span className="truncate">+ প্রোডাকশন কাজ</span>
+          </button>
         </div>
-      </section>
+      </div>
 
-      {/* Section 2: Overall Financial & Ledger Summary Cards */}
-      <section aria-labelledby="overall-summary-heading" className="space-y-3">
-        <h2
-          id="overall-summary-heading"
-          className="text-base font-bold text-slate-900 dark:text-slate-100"
-        >
-          সার্বিক মজুরি, ঋণ, ব্যয় ও ফান্ড সারসংক্ষেপ
-        </h2>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <SummaryCard
-            titleBn="আজকের অর্জিত মজুরি"
-            amount={metrics.todayEarnedWages}
-            subtitleBn="আজকের সেলাইকৃত প্রোডাকশন হতে অর্জিত"
-            icon={<CalendarCheck className="w-5 h-5" />}
-            tone="accent"
-          />
-
-          <SummaryCard
-            titleBn="এই মাসের অর্জিত মজুরি"
-            amount={metrics.monthEarnedWages}
-            subtitleBn="চলতি মাসের মোট অর্জিত মজুরি"
-            icon={<CalendarDays className="w-5 h-5" />}
-            tone="positive"
-          />
-
-          <SummaryCard
-            titleBn="গার্মেন্টস থেকে মোট পাওনা মজুরি"
-            amount={metrics.totalOutstandingWages}
-            subtitleBn="সকল মেয়াদের মোট অপরিশোধিত বকেয়া"
-            icon={<ClipboardCheck className="w-5 h-5" />}
-            tone="warning"
-          />
-
-          <SummaryCard
-            titleBn="মোট ব্যক্তিগত ব্যয়"
-            amount={metrics.totalPersonalExpenses}
-            subtitleBn="দৈনন্দিন ও পারিবারিক মোট খরচ"
-            icon={<ArrowUpRight className="w-5 h-5" />}
-            tone="danger"
-          />
-
-          <SummaryCard
-            titleBn="মোট পাওনা ঋণ (Receivable)"
-            amount={metrics.totalLoanReceivable}
-            subtitleBn="অন্যের কাছে প্রদত্ত ফেরতযোগ্য ঋণ"
-            icon={<ArrowDownLeft className="w-5 h-5" />}
-            tone="positive"
-          />
-
-          <SummaryCard
-            titleBn="মোট দেনা ঋণ (Payable)"
-            amount={metrics.totalLoanPayable}
-            subtitleBn="পরিশোধযোগ্য গৃহীত ঋণের স্থিতি"
-            icon={<HandCoins className="w-5 h-5" />}
-            tone="warning"
-          />
-
-          <SummaryCard
-            titleBn="মোট ফান্ড ব্যালেন্স"
-            amount={metrics.totalFundBalance}
-            subtitleBn="সঞ্চয়, ডিপিএস ও জরুরি তহবিলের স্থিতি"
-            icon={<PiggyBank className="w-5 h-5" />}
-            tone="accent"
-          />
-
-          <SummaryCard
-            titleBn="সাপ্তাহিক মোট উত্তোলন"
-            amount={metrics.totalWeeklyWithdrawals}
-            subtitleBn="চলতি সপ্তাহে উত্তোলিত মজুরি"
-            icon={<Wallet className="w-5 h-5" />}
-            tone="default"
-          />
-        </div>
-      </section>
-
-      {/* Section 3: Daily Production Chart (Sat-Thu) & Weekly Production Trend */}
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Daily Production Chart (Saturday to Thursday, 6 Days) */}
-        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 flex flex-col justify-between overflow-hidden">
-          <div>
-            <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
-              <div>
-                <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                  দৈনিক প্রোডাকশন ও আয়ের চার্ট (শনিবার — বৃহস্পতিবার)
+      {/* Main Two Unified Cards: 1) This Week's Production, 2) Overall Wage & Company Receivable */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Card 1: চলতি সপ্তাহের প্রোডাকশন (একটি কার্ডে সাজানো, কর্মদিবস বাদ দেওয়া হয়েছে) */}
+        <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl p-4 shadow-2xs">
+          <div className="flex items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100 dark:border-slate-800">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-7 h-7 rounded-lg bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 flex items-center justify-center shrink-0">
+                <Calendar className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                  চলতি সপ্তাহের প্রোডাকশন
                 </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  চলতি সপ্তাহের ৬টি কর্মদিবসের পিস ও অর্জিত মজুরি (শুক্রবার বাদে)
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  শনিবার {currentWeek.saturdayDateDDMMYYYY} — বৃহস্পতিবার{' '}
+                  {currentWeek.thursdayDateDDMMYYYY}
                 </p>
               </div>
-              <BarChart3 className="w-5 h-5 text-teal-700 dark:text-teal-400 shrink-0" />
             </div>
-
-            <div className="mt-4 grid grid-cols-6 gap-1.5 sm:gap-2 items-end h-44 pt-4 px-1 border-b border-slate-200 dark:border-slate-800">
-              {weeklySeries.map((day) => {
-                const barHeightPercent =
-                  day.pieces > 0
-                    ? Math.min(100, Math.max(16, Math.round((day.pieces / maxDailyPieces) * 100)))
-                    : 8;
-                return (
-                  <div
-                    key={day.dayLabel}
-                    className="flex flex-col items-center justify-end h-full gap-1.5 min-w-0"
-                  >
-                    <span className="text-[10px] sm:text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-400 truncate max-w-full">
-                      ৳{toBengaliDigits(Math.round(day.earnedAmount))}
-                    </span>
-                    <div className="w-full max-w-[30px] bg-slate-100 dark:bg-slate-800 rounded-t-lg h-28 flex items-end overflow-hidden">
-                      <div
-                        style={{ height: `${barHeightPercent}%` }}
-                        className={`w-full rounded-t-lg transition-all ${
-                          day.pieces > 0
-                            ? 'bg-teal-600 dark:bg-teal-500'
-                            : 'bg-slate-300 dark:bg-slate-700'
-                        }`}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="mt-2 grid grid-cols-6 gap-1 text-center">
-              {weeklySeries.map((day) => (
-                <div key={day.dayLabel} className="min-w-0">
-                  <span className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 truncate">
-                    {day.dayLabel}
-                  </span>
-                  <span className="block text-[10px] font-mono text-slate-500 truncate">
-                    {toBengaliDigits(day.pieces)} পিস
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>ক্যালেন্ডার: শনিবার থেকে বৃহস্পতিবার</span>
             <button
               type="button"
               onClick={() => onNavigate(ModuleId.WEEKLY_REPORT)}
-              className="text-teal-700 dark:text-teal-400 font-semibold hover:underline inline-flex items-center gap-1 cursor-pointer"
+              className="text-xs font-semibold text-teal-700 dark:text-teal-400 hover:underline flex items-center gap-1 shrink-0 cursor-pointer"
             >
-              <span>সাপ্তাহিক রিপোর্ট</span>
-              <ArrowRight className="w-3.5 h-3.5" />
+              সাপ্তাহিক রিপোর্ট <ArrowRight className="w-3.5 h-3.5" />
             </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-800">
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                মোট প্রোডাকশন
+              </p>
+              <p className="text-base sm:text-lg font-bold text-slate-900 dark:text-white mt-0.5">
+                {formatNumberBn(metrics.thisWeekTotalPieces)} পিস
+              </p>
+              <p className="text-[11px] font-semibold text-teal-700 dark:text-teal-400">
+                {formatNumberBn(metrics.thisWeekTotalDozens)} ডজন
+              </p>
+            </div>
+
+            <div className="p-3 rounded-xl bg-teal-50/50 dark:bg-teal-950/30 border border-teal-200/60 dark:border-teal-900/50">
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                অর্জিত মজুরি
+              </p>
+              <p className="text-base sm:text-lg font-bold text-teal-700 dark:text-teal-300 mt-0.5">
+                {formatCurrencyBDT(metrics.weekEarnedWages)}
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                আজ: {formatCurrencyBDT(metrics.todayEarnedWages)}
+              </p>
+            </div>
+
+            <div className="p-3 rounded-xl bg-emerald-50/50 dark:bg-emerald-950/30 border border-emerald-200/60 dark:border-emerald-900/50">
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                প্রাপ্ত মজুরি (উত্তোলন)
+              </p>
+              <p className="text-base sm:text-lg font-bold text-emerald-700 dark:text-emerald-300 mt-0.5">
+                {formatCurrencyBDT(metrics.thisWeekReceivedWages)}
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                এই সপ্তাহে গৃহীত
+              </p>
+            </div>
+
+            <div className="p-3 rounded-xl bg-amber-50/50 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-900/50">
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                সাপ্তাহিক বকেয়া
+              </p>
+              <p className="text-base sm:text-lg font-bold text-amber-700 dark:text-amber-300 mt-0.5">
+                {formatCurrencyBDT(metrics.thisWeekOutstandingWages)}
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {metrics.thisWeekAdvanceBalance > 0
+                  ? `অগ্রিম: ${formatCurrencyBDT(metrics.thisWeekAdvanceBalance)}`
+                  : 'চলতি সপ্তাহের বাকি'}
+              </p>
+            </div>
           </div>
         </div>
 
-        {/* Weekly Production Trend (Last 4 Saturday-to-Thursday Weeks) */}
-        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 flex flex-col justify-between overflow-hidden">
-          <div>
-            <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
-              <div>
-                <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                  সাপ্তাহিক প্রোডাকশন ট্রেন্ড (শেষ ৪ সপ্তাহ)
+        {/* Card 2: সার্বিক মজুরি ও কোম্পানি হিসাব (মোট কাজ, মোট উত্তোলন, মোট পাওনা ও এই মাসের অর্জিত মজুরি) */}
+        <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl p-4 shadow-2xs">
+          <div className="flex items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100 dark:border-slate-800">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-7 h-7 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 flex items-center justify-center shrink-0">
+                <TrendingUp className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                  সার্বিক মজুরি ও কোম্পানি হিসাব
                 </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  শনিবার–বৃহস্পতিবার সপ্তাহভিত্তিক মোট পিস, ডজন ও অর্জিত মজুরির তুলনা
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  সর্বমোট প্রোডাকশন, উত্তোলন এবং কোম্পানির কাছে পাওনা
                 </p>
               </div>
-              <TrendingUp className="w-5 h-5 text-teal-700 dark:text-teal-400 shrink-0" />
             </div>
-
-            <div className="mt-4 space-y-3">
-              {fourWeekTrend.map((wk, idx) => {
-                const pct = Math.max(
-                  6,
-                  Math.round((wk.totalPieces / maxTrendPieces) * 100)
-                );
-                return (
-                  <div key={wk.weekKey} className="space-y-1">
-                    <div className="flex items-center justify-between text-xs gap-2">
-                      <span className="font-mono text-slate-600 dark:text-slate-400 truncate">
-                        সপ্তাহ {toBengaliDigits(idx + 1)}: শনি{' '}
-                        {toBengaliDigits(wk.saturdayDateDDMMYYYY.slice(0, 5))} — বৃহঃ{' '}
-                        {toBengaliDigits(wk.thursdayDateDDMMYYYY.slice(0, 5))}
-                      </span>
-                      <span className="font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100 shrink-0">
-                        {toBengaliDigits(wk.totalPieces)} পিস ({formatDozensBn(wk.totalDozens)} ডজন) ·{' '}
-                        {formatTaka(wk.totalEarnedWages, true)}
-                      </span>
-                    </div>
-                    <div className="w-full h-3 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                      <div
-                        style={{ width: `${pct}%` }}
-                        className={`h-full rounded-full transition-all ${
-                          wk.totalPieces > 0
-                            ? 'bg-teal-600 dark:bg-teal-500'
-                            : 'bg-slate-300 dark:bg-slate-700'
-                        }`}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>৪, ৮, ১২ ও ২৪ সপ্তাহের তুলনা উপলব্ধ</span>
             <button
               type="button"
-              onClick={() => onNavigate(ModuleId.WEEKLY_REPORT)}
-              className="text-teal-700 dark:text-teal-400 font-semibold hover:underline inline-flex items-center gap-1 cursor-pointer"
+              onClick={() => onNavigate(ModuleId.PAYMENTS)}
+              className="text-xs font-semibold text-teal-700 dark:text-teal-400 hover:underline flex items-center gap-1 shrink-0 cursor-pointer"
             >
-              <span>বহু-সপ্তাহের তুলনা দেখুন</span>
-              <ArrowRight className="w-3.5 h-3.5" />
+              উত্তোলন তালিকা <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
-        </div>
-      </section>
 
-      {/* Section 4: Recent Production Entries & Pending Wages */}
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent Production Entries */}
-        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
-          <div className="px-4 sm:px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-800">
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                সর্বমোট কাজের মজুরি
+              </p>
+              <p className="text-base sm:text-lg font-bold text-slate-900 dark:text-white mt-0.5">
+                {formatCurrencyBDT(metrics.totalAllTimeEarnedWages)}
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {formatNumberBn(metrics.totalAllTimePieces)} পিস (
+                {formatNumberBn(metrics.totalAllTimeDozens)} ডজন)
+              </p>
+            </div>
+
+            <div className="p-3 rounded-xl bg-emerald-50/50 dark:bg-emerald-950/30 border border-emerald-200/60 dark:border-emerald-900/50">
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                সর্বমোট উত্তোলন
+              </p>
+              <p className="text-base sm:text-lg font-bold text-emerald-700 dark:text-emerald-300 mt-0.5">
+                {formatCurrencyBDT(metrics.totalAllTimeWithdrawals)}
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                মোট {formatNumberBn(paymentWithdrawals.length)}টি কিস্তিতে গৃহীত
+              </p>
+            </div>
+
+            <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/40 border border-amber-300/80 dark:border-amber-800/70">
+              <p className="text-[11px] font-semibold text-amber-900 dark:text-amber-300">
+                কোম্পানি থেকে মোট পাওনা
+              </p>
+              <p className="text-base sm:text-lg font-extrabold text-amber-700 dark:text-amber-300 mt-0.5">
+                {formatCurrencyBDT(metrics.totalOutstandingWages)}
+              </p>
+              <p className="text-[11px] text-amber-800/80 dark:text-amber-400/80">
+                কাজের মজুরি − মোট উত্তোলন
+              </p>
+            </div>
+
+            <div className="p-3 rounded-xl bg-teal-50/50 dark:bg-teal-950/30 border border-teal-200/60 dark:border-teal-900/50">
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                এই মাসের অর্জিত মজুরি
+              </p>
+              <p className="text-base sm:text-lg font-bold text-teal-700 dark:text-teal-300 mt-0.5">
+                {formatCurrencyBDT(metrics.monthEarnedWages)}
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                চলতি মাসের প্রোডাকশন
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Compact Single Strip for Funds, Loans & Personal Expenses */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl p-3.5 shadow-2xs">
+        <div className="grid grid-cols-3 gap-2 sm:gap-4 divide-x divide-slate-200 dark:divide-slate-800">
+          <div
+            onClick={() => onNavigate(ModuleId.FUNDS)}
+            className="pr-2 flex flex-col sm:flex-row sm:items-center justify-between gap-1 cursor-pointer group"
+          >
             <div>
-              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 group-hover:text-teal-600">
+                ফান্ড ব্যালেন্স
+              </p>
+              <p className="text-sm sm:text-base font-bold text-teal-700 dark:text-teal-300">
+                {formatCurrencyBDT(metrics.totalFundBalance)}
+              </p>
+            </div>
+            <span className="text-[10px] font-semibold text-slate-400 hidden sm:inline">
+              {formatNumberBn(funds.length)}টি ফান্ড →
+            </span>
+          </div>
+
+          <div
+            onClick={() => onNavigate(ModuleId.LOANS)}
+            className="px-2 sm:px-4 flex flex-col sm:flex-row sm:items-center justify-between gap-1 cursor-pointer group"
+          >
+            <div>
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 group-hover:text-amber-600">
+                লোন বাকি (দেনা)
+              </p>
+              <p className="text-sm sm:text-base font-bold text-amber-700 dark:text-amber-300">
+                {formatCurrencyBDT(metrics.totalLoanPayable)}
+              </p>
+            </div>
+            <span className="text-[10px] font-semibold text-slate-400 hidden sm:inline">
+              কিস্তি / লোন →
+            </span>
+          </div>
+
+          <div
+            onClick={() => onNavigate(ModuleId.INCOME_EXPENSE)}
+            className="pl-2 sm:pl-4 flex flex-col sm:flex-row sm:items-center justify-between gap-1 cursor-pointer group"
+          >
+            <div>
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 group-hover:text-rose-600">
+                মোট ব্যক্তিগত ব্যয়
+              </p>
+              <p className="text-sm sm:text-base font-bold text-rose-600 dark:text-rose-400">
+                {formatCurrencyBDT(metrics.totalPersonalExpenses)}
+              </p>
+            </div>
+            <span className="text-[10px] font-semibold text-slate-400 hidden sm:inline">
+              আয় ও ব্যয় →
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Bottom Row: Compact Recent Production & Chart */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Recent Production List */}
+        <div className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl p-4 shadow-2xs flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white">
                 সাম্প্রতিক প্রোডাকশন এন্ট্রি
               </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                সর্বশেষ সেলাইকৃত পোশাকের তালিকা (DD-MM-YYYY)
-              </p>
+              <button
+                type="button"
+                onClick={() => onNavigate(ModuleId.PRODUCTION)}
+                className="text-xs font-semibold text-teal-700 dark:text-teal-400 hover:underline flex items-center gap-1 cursor-pointer"
+              >
+                সব দেখুন ({formatNumberBn(recentProduction.length)})
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => onNavigate(ModuleId.PRODUCTION)}
-              className="min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold text-teal-700 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-950/50 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer shrink-0"
-            >
-              <span>সব দেখুন</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+
+            {recentProduction.length === 0 ? (
+              <p className="text-xs text-slate-500 py-8 text-center">
+                কোনো প্রোডাকশন এন্ট্রি নেই।
+              </p>
+            ) : (
+              <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                {recentProduction.slice(0, 5).map((entry) => {
+                  const thumb = entry.photos?.[0]?.previewUrl;
+                  return (
+                    <div
+                      key={entry.id}
+                      className="py-2.5 flex items-center justify-between gap-2.5"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        {thumb && (
+                          <img
+                            src={thumb}
+                            alt={entry.itemName}
+                            className="w-9 h-9 rounded-lg object-cover border border-slate-200 dark:border-slate-700 shrink-0"
+                          />
+                        )}
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                            {entry.itemName || entry.garmentType}
+                          </p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                            {entry.date} · {formatNumberBn(entry.pieces)} পিস (
+                            {formatNumberBn(entry.dozens)} ডজন)
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-xs font-bold text-teal-700 dark:text-teal-300">
+                          {formatCurrencyBDT(entry.totalWage)}
+                        </p>
+                        <StatusBadge
+                          label={
+                            entry.settlementStatus === 'settled'
+                              ? 'নিষ্পত্তি হয়েছে'
+                              : 'রেট নিষ্পত্তি হয়নি'
+                          }
+                          variant={
+                            entry.settlementStatus === 'settled'
+                              ? 'success'
+                              : 'warning'
+                          }
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Weekly / Daily Chart */}
+        <div className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl p-4 shadow-2xs">
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+              মজুরি চার্ট ({chartMode === 'daily' ? 'চলতি সপ্তাহ' : 'সাপ্তাহিক তুলনা'})
+            </h2>
+            <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5">
+              <button
+                type="button"
+                onClick={() => setChartMode('daily')}
+                className={`px-2.5 py-1 text-[11px] font-bold rounded-md cursor-pointer ${
+                  chartMode === 'daily'
+                    ? 'bg-white dark:bg-slate-900 text-teal-700 dark:text-teal-300 shadow-2xs'
+                    : 'text-slate-500'
+                }`}
+              >
+                দৈনিক
+              </button>
+              <button
+                type="button"
+                onClick={() => setChartMode('weekly')}
+                className={`px-2.5 py-1 text-[11px] font-bold rounded-md cursor-pointer ${
+                  chartMode === 'weekly'
+                    ? 'bg-white dark:bg-slate-900 text-teal-700 dark:text-teal-300 shadow-2xs'
+                    : 'text-slate-500'
+                }`}
+              >
+                সাপ্তাহিক
+              </button>
+            </div>
           </div>
 
-          {recentProduction.length === 0 ? (
-            <EmptyDataState
-              titleBn="কোনো সাম্প্রতিক প্রোডাকশন এন্ট্রি নেই"
-              descriptionBn="প্রোডাকশন হিসাব পাতায় নতুন এন্ট্রি যুক্ত করলে অথবা Google Sheets / Excel থেকে ডেটা ইমপোর্ট করলে এখানে প্রদর্শিত হবে।"
-              tableNameHint="production_entries"
-              actionLabelBn="প্রোডাকশন হিসাব পাতায় যান"
-              onActionClick={() => onNavigate(ModuleId.PRODUCTION)}
-              icon={<Scissors className="w-6 h-6" />}
-            />
+          {chartMode === 'daily' ? (
+            <div className="space-y-2.5 pt-1">
+              {weeklySeries.map((day) => {
+                const pct = Math.max(
+                  4,
+                  Math.round((day.earnedAmount / maxDailyEarned) * 100)
+                );
+                return (
+                  <div key={day.dayLabel} className="space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-slate-700 dark:text-slate-300">
+                        {day.dayLabel}{' '}
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          ({day.dateLabel.slice(0, 5)})
+                        </span>
+                      </span>
+                      <span className="font-mono font-bold text-teal-700 dark:text-teal-300">
+                        {formatCurrencyBDT(day.earnedAmount)}{' '}
+                        <span className="text-[10px] font-normal text-slate-500">
+                          ({formatNumberBn(day.pieces)} পিস)
+                        </span>
+                      </span>
+                    </div>
+                    <div className="w-full h-2.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                      <div
+                        style={{ width: `${pct}%` }}
+                        className={`h-full rounded-full ${
+                          day.earnedAmount > 0
+                            ? 'bg-teal-600 dark:bg-teal-500'
+                            : 'bg-slate-300 dark:bg-slate-700'
+                        }`}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           ) : (
-            <div className="divide-y divide-slate-100 dark:divide-slate-800">
-              {recentProduction.slice(0, 5).map((entry) => (
-                <div
-                  key={entry.id}
-                  className="px-4 sm:px-5 py-3.5 flex items-center justify-between gap-3 hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors"
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
-                      {entry.itemName || entry.garmentType}
-                    </p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
-                      <span>{formatDateDDMMYYYY(entry.date, true)}</span>
-                      <span className="mx-1.5" aria-hidden="true">
-                        ·
+            <div className="space-y-3 pt-1">
+              {recentWeeksChartData.map((wk, idx) => {
+                const earnedPct = Math.max(
+                  4,
+                  Math.round((wk.earnedAmount / maxWeeklyEarned) * 100)
+                );
+                const recPct = Math.max(
+                  4,
+                  Math.round((wk.receivedAmount / maxWeeklyEarned) * 100)
+                );
+                return (
+                  <div key={`${wk.label}-${idx}`} className="space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-slate-700 dark:text-slate-300">
+                        সপ্তাহ ({wk.label})
                       </span>
-                      <span>
-                        {entry.workStatus === 'completed'
-                          ? 'কাজ সম্পন্ন'
-                          : 'কাজ চলছে'}
+                      <span className="font-mono text-[11px] font-bold text-slate-800 dark:text-slate-200">
+                        কাজ: {formatCurrencyBDT(wk.earnedAmount)} · উত্তোলন:{' '}
+                        {formatCurrencyBDT(wk.receivedAmount)}
                       </span>
-                      <span className="mx-1.5" aria-hidden="true">
-                        ·
-                      </span>
-                      <span
-                        className={
-                          entry.settlementStatus === 'settled'
-                            ? 'text-emerald-700 dark:text-emerald-400 font-semibold'
-                            : 'text-amber-700 dark:text-amber-400 font-semibold'
-                        }
-                      >
-                        {entry.settlementStatus === 'settled'
-                          ? 'নিষ্পত্তি হয়েছে'
-                          : 'রেট নিষ্পত্তি হয়নি'}
-                      </span>
-                    </p>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          style={{ width: `${earnedPct}%` }}
+                          className="h-full rounded-full bg-teal-600"
+                        />
+                      </div>
+                      <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          style={{ width: `${recPct}%` }}
+                          className="h-full rounded-full bg-emerald-500"
+                        />
+                      </div>
+                    </div>
                   </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm font-bold text-slate-900 dark:text-slate-100 font-mono tabular-nums">
-                      {formatTaka(entry.totalWage, true)}
-                    </p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-                      {toBengaliDigits(entry.pieces ?? 0)} পিস ·{' '}
-                      {formatDozensBn(entry.dozens)} ডজন
-                    </p>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
+      </div>
 
-        {/* Unsettled Rate Entries List (রেট নিষ্পত্তি হয়নি) */}
-        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
-          <div className="px-4 sm:px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                রেট নিষ্পত্তি হয়নি (অপেক্ষমাণ প্রোডাকশন)
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                যেসব প্রোডাকশন এন্ট্রির রেট নিষ্পত্তি এখনও সম্পন্ন হয়নি
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => onNavigate(ModuleId.PRODUCTION)}
-              className="min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold text-teal-700 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-950/50 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer shrink-0"
-            >
-              <span>সব দেখুন</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-          {pendingWageEntries.length === 0 && recentTransactions.length === 0 ? (
-            <EmptyDataState
-              titleBn="রেট নিষ্পত্তি বাকি থাকা কোনো এন্ট্রি নেই"
-              descriptionBn="যেসব প্রোডাকশন এন্ট্রির রেট এখনও নিষ্পত্তি হয়নি, সেগুলোর তালিকা এখানে অগ্রাধিকার ভিত্তিতে দেখা যাবে।"
-              tableNameHint="production_entries (settlement_status = 'pending')"
-              actionLabelBn="প্রোডাকশন খতিয়ান দেখুন"
-              onActionClick={() => onNavigate(ModuleId.PRODUCTION)}
-              icon={<Wallet className="w-6 h-6" />}
-            />
-          ) : (
-            <div className="divide-y divide-slate-100 dark:divide-slate-800">
-              {pendingWageEntries.slice(0, 5).map((entry) => (
-                <div
-                  key={entry.id}
-                  className="px-4 sm:px-5 py-3.5 flex items-center justify-between gap-3 bg-amber-50/30 dark:bg-amber-950/20"
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
-                      {entry.itemName || entry.garmentType}
-                    </p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
-                      <span>{formatDateDDMMYYYY(entry.date, true)}</span>
-                      <span className="mx-1.5" aria-hidden="true">
-                        ·
-                      </span>
-                      <span className="text-amber-700 dark:text-amber-400 font-semibold">
-                        রেট নিষ্পত্তি হয়নি
-                      </span>
-                    </p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm font-bold text-amber-800 dark:text-amber-300 font-mono tabular-nums">
-                      {formatTaka(entry.pendingWage ?? entry.totalWage, true)}
-                    </p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-                      {toBengaliDigits(entry.pieces ?? 0)} পিস
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </section>
+      {/* Multi-Section Entry Modal */}
+      <QuickMultiSectionEntryModal
+        isOpen={quickModalOpen}
+        initialSection={quickModalSection}
+        onClose={() => setQuickModalOpen(false)}
+        funds={funds}
+        loans={loans}
+        onSaveProduction={onSaveProduction}
+        onSaveWithdrawal={onSaveWithdrawal}
+        onSaveFund={onSaveFund}
+        onSaveLoan={onSaveLoan}
+        onSaveTransaction={onSaveTransaction}
+      />
     </div>
   );
 };

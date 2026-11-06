@@ -168,74 +168,72 @@ export const WeeklyReportPage: React.FC<WeeklyReportPageProps> = ({
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
       <PageHeader
-        moduleIndexBn="০৩. প্রধান মডিউল · সাপ্তাহিক রিপোর্ট (শনিবার থেকে বৃহস্পতিবার)"
-        titleBn="সাপ্তাহিক প্রোডাকশন রিপোর্ট ও তুলনামূলক বিশ্লেষণ"
-        subtitleBn="কর্মসপ্তাহ: শনিবার (প্রথম দিন) থেকে বৃহস্পতিবার (শেষ দিন)। শুক্রবার সাধারণ সাপ্তাহিক কর্মদিবস গণনা থেকে বাদ রাখা হয়েছে।"
-        primaryActionLabelBn="চলতি সপ্তাহে ফিরুন"
-        primaryActionIcon={<CalendarCheck className="w-4 h-4" />}
-        onPrimaryAction={handleCurrentWeek}
+        titleBn="সাপ্তাহিক প্রোডাকশন রিপোর্ট"
+        actions={
+          <button
+            type="button"
+            onClick={handleCurrentWeek}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold cursor-pointer"
+          >
+            <CalendarCheck className="w-4 h-4" />
+            চলতি সপ্তাহে ফিরুন
+          </button>
+        }
       />
 
-      {/* Weekly Report Navigation Bar */}
+      {/* Weekly Report Navigation & Unified Summary Card */}
       <section
-        aria-label="সাপ্তাহিক রিপোর্ট নেভিগেশন"
-        className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-4"
+        aria-label="সাপ্তাহিক রিপোর্ট নেভিগেশন ও সারসংক্ষেপ"
+        className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-4 shadow-2xs"
       >
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
-          <div className="space-y-0.5">
-            <p className="text-xs font-semibold text-teal-700 dark:text-teal-400">
-              নির্বাচিত কর্মসপ্তাহ (শনিবার — বৃহস্পতিবার · শুক্রবার সাপ্তাহিক ছুটি)
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+          <div>
+            <p className="text-[11px] font-semibold text-teal-700 dark:text-teal-400">
+              নির্বাচিত সপ্তাহ (শনিবার — বৃহস্পতিবার)
             </p>
-            <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-slate-100 font-mono tabular-nums">
-              শনিবার ({toBengaliDigits(currentWeekSummary.saturdayDateDDMMYYYY)}) থেকে বৃহস্পতিবার (
+            <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-slate-100">
+              শনিবার ({toBengaliDigits(currentWeekSummary.saturdayDateDDMMYYYY)}) — বৃহস্পতিবার (
               {toBengaliDigits(currentWeekSummary.thursdayDateDDMMYYYY)})
             </h2>
           </div>
 
-          {/* Previous / Current / Next Week Buttons */}
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               onClick={handlePreviousWeek}
-              className="min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+              className="px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
             >
-              <ChevronLeft className="w-4 h-4" />
-              <span>পূর্ববর্তী সপ্তাহ</span>
+              <ChevronLeft className="w-3.5 h-3.5" />
+              পূর্ববর্তী
             </button>
-
             <button
               type="button"
               onClick={handleCurrentWeek}
-              className="min-h-[42px] px-3.5 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs sm:text-sm font-semibold cursor-pointer"
+              className="px-3 py-1.5 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer"
             >
               চলতি সপ্তাহ
             </button>
-
             <button
               type="button"
               onClick={handleNextWeek}
-              className="min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+              className="px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
             >
-              <span>পরবর্তী সপ্তাহ</span>
-              <ChevronRight className="w-4 h-4" />
+              পরবর্তী
+              <ChevronRight className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
 
-        {/* Select Month, Year, and Specific Week */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className="space-y-1">
-            <label
-              htmlFor="weekly-select-year"
-              className="block text-xs font-medium text-slate-600 dark:text-slate-400"
-            >
-              বছর নির্বাচন করুন
+        {/* Compact Week Filter Controls */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+          <div>
+            <label className="block text-[11px] font-medium text-slate-500 mb-1">
+              বছর
             </label>
             <select
-              id="weekly-select-year"
               value={selectedYear}
               onChange={(e) => handleYearChange(Number(e.target.value))}
-              className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100"
+              className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold text-slate-900 dark:text-slate-100"
             >
               {[2023, 2024, 2025, 2026, 2027].map((yr) => (
                 <option key={yr} value={yr}>
@@ -245,18 +243,14 @@ export const WeeklyReportPage: React.FC<WeeklyReportPageProps> = ({
             </select>
           </div>
 
-          <div className="space-y-1">
-            <label
-              htmlFor="weekly-select-month"
-              className="block text-xs font-medium text-slate-600 dark:text-slate-400"
-            >
-              মাস নির্বাচন করুন (Select Month)
+          <div>
+            <label className="block text-[11px] font-medium text-slate-500 mb-1">
+              মাস
             </label>
             <select
-              id="weekly-select-month"
               value={selectedMonth}
               onChange={(e) => handleMonthChange(Number(e.target.value))}
-              className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100"
+              className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold text-slate-900 dark:text-slate-100"
             >
               {BENGALI_MONTH_NAMES.map((mName, idx) => (
                 <option key={mName} value={idx}>
@@ -266,15 +260,11 @@ export const WeeklyReportPage: React.FC<WeeklyReportPageProps> = ({
             </select>
           </div>
 
-          <div className="space-y-1">
-            <label
-              htmlFor="weekly-select-week"
-              className="block text-xs font-medium text-slate-600 dark:text-slate-400"
-            >
-              সপ্তাহ নির্বাচন করুন (Select Week: শনি-বৃহঃ)
+          <div>
+            <label className="block text-[11px] font-medium text-slate-500 mb-1">
+              সপ্তাহ (শনি-বৃহঃ)
             </label>
             <select
-              id="weekly-select-week"
               value={currentWeekSummary.saturdayIso}
               onChange={(e) => {
                 const found = weeksInSelectedMonth.find(
@@ -282,7 +272,7 @@ export const WeeklyReportPage: React.FC<WeeklyReportPageProps> = ({
                 );
                 if (found) setSelectedSaturday(found.saturdayDate);
               }}
-              className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs sm:text-sm text-slate-900 dark:text-slate-100"
+              className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold text-slate-900 dark:text-slate-100"
             >
               {weeksInSelectedMonth.map((wk) => (
                 <option key={wk.saturdayIso} value={wk.saturdayIso}>
@@ -292,108 +282,66 @@ export const WeeklyReportPage: React.FC<WeeklyReportPageProps> = ({
             </select>
           </div>
 
-          <div className="space-y-1">
-            <label
-              htmlFor="weekly-jump-date"
-              className="block text-xs font-medium text-slate-600 dark:text-slate-400"
-            >
-              যেকোনো তারিখের সপ্তাহে যান
+          <div>
+            <label className="block text-[11px] font-medium text-slate-500 mb-1">
+              যেকোনো তারিখে যান
             </label>
             <input
-              id="weekly-jump-date"
               type="date"
               value={currentWeekSummary.saturdayIso}
               onChange={(e) => handleJumpToAnyDateWeek(e.target.value)}
-              className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm font-mono text-slate-900 dark:text-slate-100"
+              className="w-full px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-mono text-slate-900 dark:text-slate-100"
             />
           </div>
         </div>
-      </section>
 
-      {/* 8 Summary Metrics for Selected Week (Saturday to Thursday) */}
-      <section aria-label="নির্বাচিত সপ্তাহের সারসংক্ষেপ কার্ডসমূহ">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
-          <SummaryCard
-            titleBn="সপ্তাহের শুরু ও শেষ (শনি — বৃহঃ)"
-            amount={null}
-            customValueBn={`${toBengaliDigits(
-              currentWeekSummary.saturdayDateDDMMYYYY
-            )} → ${toBengaliDigits(currentWeekSummary.thursdayDateDDMMYYYY)}`}
-            subtitleBn="শনিবার প্রথম দিন · বৃহস্পতিবার শেষ দিন"
-            icon={<CalendarRange className="w-5 h-5" />}
-            tone="accent"
-          />
+        {/* Single Unified Weekly Summary Grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2">
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-800">
+            <p className="text-[11px] font-medium text-slate-500">
+              মোট প্রোডাকশন
+            </p>
+            <p className="text-base font-bold text-slate-900 dark:text-white mt-0.5">
+              {toBengaliDigits(currentWeekSummary.totalPieces)} পিস
+            </p>
+            <p className="text-[11px] font-semibold text-teal-700 dark:text-teal-400">
+              {formatDozensBn(currentWeekSummary.totalDozens)} ডজন
+            </p>
+          </div>
 
-          <SummaryCard
-            titleBn="মোট প্রোডাকশন (পিস)"
-            amount={null}
-            customValueBn={`${toBengaliDigits(currentWeekSummary.totalPieces)} পিস`}
-            subtitleBn={`মোট এন্ট্রি: ${toBengaliDigits(
-              currentWeekSummary.entriesCount
-            )} টি`}
-            icon={<Scissors className="w-5 h-5" />}
-            tone="positive"
-          />
+          <div className="p-3 rounded-xl bg-teal-50/50 dark:bg-teal-950/30 border border-teal-200/60 dark:border-teal-900/50">
+            <p className="text-[11px] font-medium text-slate-500">
+              অর্জিত মজুরি
+            </p>
+            <p className="text-base font-bold text-teal-700 dark:text-teal-300 mt-0.5">
+              {formatTaka(currentWeekSummary.totalEarnedWages, true)}
+            </p>
+            <p className="text-[11px] text-slate-500">
+              মোট {toBengaliDigits(currentWeekSummary.entriesCount)}টি এন্ট্রি
+            </p>
+          </div>
 
-          <SummaryCard
-            titleBn="মোট প্রোডাকশন (ডজন)"
-            amount={null}
-            customValueBn={`${formatDozensBn(currentWeekSummary.totalDozens)} ডজন`}
-            subtitleBn="সূত্র: মোট পিস ÷ ১২"
-            icon={<Layers className="w-5 h-5" />}
-            tone="accent"
-          />
+          <div className="p-3 rounded-xl bg-emerald-50/50 dark:bg-emerald-950/30 border border-emerald-200/60 dark:border-emerald-900/50">
+            <p className="text-[11px] font-medium text-slate-500">
+              প্রাপ্ত মজুরি (উত্তোলন)
+            </p>
+            <p className="text-base font-bold text-emerald-700 dark:text-emerald-300 mt-0.5">
+              {formatTaka(currentWeekSummary.totalReceivedWages, true)}
+            </p>
+            <p className="text-[11px] text-slate-500">এই সপ্তাহে গৃহীত</p>
+          </div>
 
-          <SummaryCard
-            titleBn="মোট কর্মদিবস (শুক্রবার ব্যতীত)"
-            amount={null}
-            customValueBn={`${toBengaliDigits(
-              currentWeekSummary.workingDaysCount
-            )} / ৬ দিন`}
-            subtitleBn="শনিবার থেকে বৃহস্পতিবারের সক্রিয় কর্মদিবস"
-            icon={<Clock className="w-5 h-5" />}
-            tone="default"
-          />
-
-          <SummaryCard
-            titleBn="মোট অর্জিত মজুরি (Earned)"
-            amount={currentWeekSummary.totalEarnedWages}
-            subtitleBn="এই সপ্তাহের সেলাই প্রোডাকশন হতে অর্জিত"
-            icon={<BarChart3 className="w-5 h-5" />}
-            tone="positive"
-          />
-
-          <SummaryCard
-            titleBn="মোট প্রাপ্ত মজুরি (Received)"
-            amount={currentWeekSummary.totalReceivedWages}
-            subtitleBn={
-              currentWeekSummary.advanceBalance > 0
-                ? `অগ্রিম স্থিতি: ${formatTaka(currentWeekSummary.advanceBalance, true)}`
-                : 'এই সপ্তাহে প্রকৃত প্রাপ্ত টাকা'
-            }
-            icon={<Wallet className="w-5 h-5" />}
-            tone="accent"
-          />
-
-          <SummaryCard
-            titleBn="মোট বকেয়া মজুরি (Outstanding)"
-            amount={currentWeekSummary.totalOutstandingWages}
-            subtitleBn="এই সপ্তাহের অপরিশোধিত পাওনা মজুরি"
-            icon={<Calendar className="w-5 h-5" />}
-            tone="warning"
-          />
-
-          <SummaryCard
-            titleBn="দৈনিক গড় প্রোডাকশন ও মজুরি"
-            amount={currentWeekSummary.averageDailyEarnedWages}
-            subtitleBn={`গড়: ${toBengaliDigits(
-              currentWeekSummary.averageDailyPieces
-            )} পিস (${formatDozensBn(
-              currentWeekSummary.averageDailyDozens
-            )} ডজন)/দিন`}
-            icon={<TrendingUp className="w-5 h-5" />}
-            tone="default"
-          />
+          <div className="p-3 rounded-xl bg-amber-50/50 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-900/50">
+            <p className="text-[11px] font-medium text-slate-500">
+              সাপ্তাহিক বকেয়া
+            </p>
+            <p className="text-base font-bold text-amber-700 dark:text-amber-300 mt-0.5">
+              {formatTaka(currentWeekSummary.totalOutstandingWages, true)}
+            </p>
+            <p className="text-[11px] text-slate-500">
+              গড়/দিন: {formatTaka(currentWeekSummary.averageDailyEarnedWages, true)}
+            </p>
+          </div>
         </div>
       </section>
 

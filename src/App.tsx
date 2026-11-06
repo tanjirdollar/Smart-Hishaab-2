@@ -814,9 +814,16 @@ export default function App() {
             recentProduction={repo.productionEntries}
             paymentWithdrawals={repo.paymentWithdrawals}
             recentTransactions={repo.incomeExpenseRecords}
+            funds={repo.fundRecords}
+            loans={repo.loanRecords}
             weeklySeries={weeklySeries}
             monthlySeries={monthlySeries}
             onNavigate={setActiveModule}
+            onSaveProduction={handleSaveProduction}
+            onSaveWithdrawal={handleSaveWithdrawal}
+            onSaveFund={handleSaveFund}
+            onSaveLoan={handleSaveLoan}
+            onSaveTransaction={handleSaveTransaction}
           />
         );
       case ModuleId.PRODUCTION:

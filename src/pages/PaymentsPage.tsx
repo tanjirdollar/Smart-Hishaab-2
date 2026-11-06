@@ -1,34 +1,15 @@
-import React, { useState } from 'react';
-import {
-  Banknote,
-  Calendar,
-  Edit3,
-  FileText,
-  Plus,
-  Search,
-  Trash2,
-} from 'lucide-react';
-import { PAYMENT_METHOD_OPTIONS } from '../config/navigation';
+import React, { useMemo, useState } from 'react';
+import { Edit2, Plus, Trash2, X } from 'lucide-react';
+import { DatePickerInput } from '../components/ui/DatePickerInput';
+import { PageHeader } from '../components/ui/PageHeader';
 import { PaymentWithdrawalRecord } from '../types/models';
 import {
-  formatDateDDMMYYYY,
-  formatTaka,
+  formatCurrencyBDT,
+  formatNumberBn,
   getTodayDDMMYYYY,
-  toAsciiDigits,
-  toBengaliDigits,
 } from '../utils/formatters';
-import { EmptyDataState } from '../components/ui/EmptyDataState';
-import {
-  DateInputDDMMYYYY,
-  FormInput,
-  FormSelect,
-  FormTextarea,
-} from '../components/ui/FormFields';
-import { ModalDrawer } from '../components/ui/ModalDrawer';
-import { PageHeader } from '../components/ui/PageHeader';
-import { SummaryCard } from '../components/ui/SummaryCard';
 
-export interface PaymentsPageProps {
+interface PaymentsPageProps {
   withdrawals: PaymentWithdrawalRecord[];
   onSaveWithdrawal: (record: PaymentWithdrawalRecord) => void;
   onDeleteWithdrawal: (id: string) => void;
@@ -39,24 +20,38 @@ export const PaymentsPage: React.FC<PaymentsPageProps> = ({
   onSaveWithdrawal,
   onDeleteWithdrawal,
 }) => {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [methodFilter, setMethodFilter] = useState('ALL');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingItem, setEditingItem] =
+    useState<PaymentWithdrawalRecord | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [date, setDate] = useState(getTodayDDMMYYYY(false));
+  const [date, setDate] = useState(getTodayDDMMYYYY());
   const [voucherNo, setVoucherNo] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState(PAYMENT_METHOD_OPTIONS[0]);
+  const [paymentMethod, setPaymentMethod] = useState('নগদ (Cash)');
   const [weekReference, setWeekReference] = useState('');
   const [amount, setAmount] = useState('');
   const [approvedBy, setApprovedBy] = useState('');
   const [remarks, setRemarks] = useState('');
 
-  const openAddModal = () => {
-    setEditingId(null);
-    setDate(getTodayDDMMYYYY(false));
-    setVoucherNo('');
-    setPaymentMethod(PAYMENT_METHOD_OPTIONS[0]);
+  const summary = useMemo(() => {
+    const totalWithdrawn = withdrawals.reduce(
+      (sum, w) => sum + (w.amount ?? 0),
+      0
+    );
+    const latest = withdrawals[0];
+    return {
+      totalWithdrawn,
+      count: withdrawals.length,
+      latestAmount: latest?.amount ?? 0,
+      latestDate: latest?.date ?? '—',
+    };
+  }, [withdrawals]);
+
+  const openCreateModal = () => {
+    setEditingItem(null);
+    setDate(getTodayDDMMYYYY());
+    setVoucherNo(`VCH-${Date.now().toString().slice(-4)}`);
+    setPaymentMethod('নগদ (Cash)');
     setWeekReference('');
     setAmount('');
     setApprovedBy('');
@@ -64,289 +59,257 @@ export const PaymentsPage: React.FC<PaymentsPageProps> = ({
     setIsModalOpen(true);
   };
 
-  const openEditModal = (rec: PaymentWithdrawalRecord) => {
-    setEditingId(rec.id);
-    setDate(rec.date);
-    setVoucherNo(rec.voucherNo);
-    setPaymentMethod(rec.paymentMethod);
-    setWeekReference(rec.weekReference);
-    setAmount(rec.amount !== null ? String(rec.amount) : '');
-    setApprovedBy(rec.approvedBy);
-    setRemarks(rec.remarks);
+  const openEditModal = (item: PaymentWithdrawalRecord) => {
+    setEditingItem(item);
+    setDate(item.date);
+    setVoucherNo(item.voucherNo);
+    setPaymentMethod(item.paymentMethod);
+    setWeekReference(item.weekReference);
+    setAmount(item.amount !== null ? String(item.amount) : '');
+    setApprovedBy(item.approvedBy);
+    setRemarks(item.remarks);
     setIsModalOpen(true);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanAmt = toAsciiDigits(amount).trim();
-    const parsedAmt = cleanAmt && Number.isFinite(Number(cleanAmt)) ? Number(cleanAmt) : null;
-
     onSaveWithdrawal({
-      id: editingId ?? `pay-${Date.now()}`,
-      date: date || getTodayDDMMYYYY(false),
-      voucherNo: voucherNo.trim() || 'SLIP-01',
-      paymentMethod,
-      weekReference: weekReference.trim() || 'সাপ্তাহিক উত্তোলন',
-      amount: parsedAmt,
-      approvedBy: approvedBy.trim() || 'হিসাব শাখা',
-      remarks: remarks.trim(),
+      id: editingItem ? editingItem.id : `wd-${Date.now()}`,
+      date: date || getTodayDDMMYYYY(),
+      voucherNo: voucherNo.trim() || '—',
+      paymentMethod: paymentMethod.trim() || 'নগদ (Cash)',
+      weekReference: weekReference.trim() || 'মজুরি উত্তোলন',
+      amount: amount !== '' ? Number(amount) : null,
+      approvedBy: approvedBy.trim() || 'স্ব-এন্ট্রি',
+      remarks: remarks.trim() || 'বিল উত্তোলন',
     });
     setIsModalOpen(false);
   };
 
-  const filtered = withdrawals.filter((w) => {
-    if (methodFilter !== 'ALL' && w.paymentMethod !== methodFilter) return false;
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      if (
-        !`${w.voucherNo} ${w.weekReference} ${w.remarks} ${w.date}`
-          .toLowerCase()
-          .includes(q)
-      ) {
-        return false;
-      }
-    }
-    return true;
-  });
-
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <PageHeader
-        moduleIndexBn="০৪. প্রধান মডিউল · টাকা উত্তোলন"
-        titleBn="টাকা উত্তোলন ও পেমেন্ট রেকর্ড"
-        subtitleBn="গার্মেন্টস কোম্পানি থেকে সাপ্তাহিক বা মাসিক মজুরি বাবদ নগদ, বিকাশ বা ব্যাংকে উত্তোলিত টাকার হিসাব"
-        primaryActionLabelBn="নতুন টাকা উত্তোলন যোগ করুন"
-        primaryActionIcon={<Plus className="w-4 h-4" />}
-        onPrimaryAction={openAddModal}
+        titleBn="বিল ও মজুরি উত্তোলন"
+        actions={
+          <button
+            type="button"
+            onClick={openCreateModal}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl bg-teal-700 hover:bg-teal-800 text-white shadow-2xs transition-colors cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            বিল উত্তোলন যোগ করুন
+          </button>
+        }
       />
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <SummaryCard
-          titleBn="এই সপ্তাহের মোট উত্তোলন"
-          amount={null}
-          subtitleBn="চলতি সপ্তাহে গার্মেন্টস হতে প্রাপ্ত টাকা"
-          dbColumnHint="weekly_withdrawals"
-          icon={<Banknote className="w-5 h-5" />}
-          tone="accent"
-        />
-        <SummaryCard
-          titleBn="এই মাসের মোট উত্তোলন"
-          amount={null}
-          subtitleBn="চলতি মাসের সর্বমোট উত্তোলিত মজুরি"
-          dbColumnHint="monthly_withdrawals"
-          icon={<Calendar className="w-5 h-5" />}
-          tone="positive"
-        />
-        <SummaryCard
-          titleBn="মোট ভাউচার / স্লিপ সংখ্যা"
-          amount={null}
-          customValueBn={`${toBengaliDigits(withdrawals.length)} টি`}
-          subtitleBn="সংরক্ষিত পেমেন্ট উত্তোলন রসিদ"
-          dbColumnHint="payment_withdrawals"
-          icon={<FileText className="w-5 h-5" />}
-          tone="default"
-        />
+      {/* Single Minimal Summary Card */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl p-4 shadow-2xs">
+        <div className="grid grid-cols-3 gap-3 divide-x divide-slate-200 dark:divide-slate-800">
+          <div className="pr-2">
+            <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              সর্বমোট উত্তোলন
+            </p>
+            <p className="text-base sm:text-xl font-bold text-emerald-700 dark:text-emerald-300 mt-0.5">
+              {formatCurrencyBDT(summary.totalWithdrawn)}
+            </p>
+          </div>
+          <div className="px-3">
+            <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              মোট কিস্তি সংখ্যা
+            </p>
+            <p className="text-base sm:text-xl font-bold text-slate-900 dark:text-white mt-0.5">
+              {formatNumberBn(summary.count)}টি
+            </p>
+          </div>
+          <div className="pl-3">
+            <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              সর্বশেষ উত্তোলন ({summary.latestDate})
+            </p>
+            <p className="text-base sm:text-xl font-bold text-teal-700 dark:text-teal-300 mt-0.5">
+              {formatCurrencyBDT(summary.latestAmount)}
+            </p>
+          </div>
+        </div>
       </div>
 
-      {/* Filter Bar */}
-      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div className="sm:col-span-2 relative flex items-center">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 pointer-events-none" />
-          <input
-            type="search"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="ভাউচার নম্বর, সপ্তাহ বা তারিখ (DD-MM-YYYY) খুঁজুন..."
-            className="w-full min-h-[44px] pl-9 pr-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100"
-          />
-        </div>
-        <FormSelect
-          id="payment-method-filter"
-          labelBn=""
-          value={methodFilter}
-          onChange={(e) => setMethodFilter(e.target.value)}
-          options={[
-            { value: 'ALL', labelBn: 'সকল পেমেন্ট মাধ্যম' },
-            ...PAYMENT_METHOD_OPTIONS.map((m) => ({ value: m, labelBn: m })),
-          ]}
-        />
-      </div>
+      {/* Withdrawals List */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl overflow-hidden shadow-2xs">
+        {withdrawals.length === 0 ? (
+          <p className="text-xs text-slate-500 py-10 text-center">
+            কোনো বিল উত্তোলনের রেকর্ড নেই।
+          </p>
+        ) : (
+          <div className="divide-y divide-slate-100 dark:divide-slate-800">
+            {withdrawals.map((row) => (
+              <div
+                key={row.id}
+                className="p-3.5 sm:px-5 flex items-center justify-between gap-3 hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
+                      {row.weekReference || row.remarks || 'বিল উত্তোলন'}
+                    </span>
+                    <span className="px-2 py-0.5 text-[10px] font-semibold rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                      {row.paymentMethod}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    তারিখ: {row.date}
+                    {row.remarks && row.remarks !== row.weekReference
+                      ? ` · ${row.remarks}`
+                      : ''}
+                  </p>
+                </div>
 
-      {/* Withdrawals Table */}
-      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-          <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-            টাকা উত্তোলনের ইতিহাস
-          </h2>
-          <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
-            টেবিল: payment_withdrawals
-          </span>
-        </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-sm sm:text-base font-bold text-emerald-700 dark:text-emerald-400">
+                    {formatCurrencyBDT(row.amount)}
+                  </span>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/60 text-xs font-semibold text-slate-600 dark:text-slate-400">
-                <th className="py-3.5 px-4 whitespace-nowrap">তারিখ (DD-MM-YYYY)</th>
-                <th className="py-3.5 px-4 whitespace-nowrap">ভাউচার / স্লিপ নম্বর</th>
-                <th className="py-3.5 px-4 whitespace-nowrap">সপ্তাহ / রেফারেন্স</th>
-                <th className="py-3.5 px-4 whitespace-nowrap">পেমেন্ট মাধ্যম</th>
-                <th className="py-3.5 px-4 text-right whitespace-nowrap">উত্তোলিত টাকা (৳)</th>
-                <th className="py-3.5 px-4 whitespace-nowrap">মন্তব্য</th>
-                <th className="py-3.5 px-4 text-right whitespace-nowrap">কার্যক্রম</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
-              {filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={7}>
-                    <EmptyDataState
-                      titleBn="কোনো টাকা উত্তোলনের রেকর্ড নেই"
-                      descriptionBn="গার্মেন্টস থেকে মজুরি বা অগ্রিম টাকা উত্তোলন করলে তার তারিখ, ভাউচার নম্বর ও পরিমাণ এখানে তালিকাভুক্ত থাকবে।"
-                      tableNameHint="payment_withdrawals"
-                      actionLabelBn="নতুন টাকা উত্তোলন যোগ করুন"
-                      onActionClick={openAddModal}
-                      icon={<Banknote className="w-6 h-6" />}
-                    />
-                  </td>
-                </tr>
-              ) : (
-                filtered.map((rec) => (
-                  <tr
-                    key={rec.id}
-                    className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors"
-                  >
-                    <td className="py-3.5 px-4 font-mono tabular-nums text-slate-800 dark:text-slate-200 whitespace-nowrap">
-                      {formatDateDDMMYYYY(rec.date, true)}
-                    </td>
-                    <td className="py-3.5 px-4 font-mono text-slate-700 dark:text-slate-300 whitespace-nowrap">
-                      {rec.voucherNo}
-                    </td>
-                    <td className="py-3.5 px-4 font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap">
-                      {rec.weekReference}
-                    </td>
-                    <td className="py-3.5 px-4 text-slate-600 dark:text-slate-400 whitespace-nowrap">
-                      {rec.paymentMethod}
-                    </td>
-                    <td className="py-3.5 px-4 text-right font-mono tabular-nums font-bold text-slate-900 dark:text-slate-100 whitespace-nowrap">
-                      {formatTaka(rec.amount, true)}
-                    </td>
-                    <td className="py-3.5 px-4 text-slate-600 dark:text-slate-400 max-w-xs truncate">
-                      {rec.remarks || '—'}
-                    </td>
-                    <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-1.5">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => openEditModal(row)}
+                      className="p-1.5 rounded-lg text-slate-500 hover:text-teal-700 hover:bg-teal-50 dark:hover:bg-teal-950/50 cursor-pointer"
+                      title="সম্পাদনা"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    {confirmDeleteId === row.id ? (
+                      <div className="flex items-center gap-1">
                         <button
                           type="button"
-                          onClick={() => openEditModal(rec)}
-                          className="min-h-[36px] px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1 cursor-pointer"
+                          onClick={() => {
+                            onDeleteWithdrawal(row.id);
+                            setConfirmDeleteId(null);
+                          }}
+                          className="px-2 py-1 text-[10px] font-bold rounded-lg bg-rose-600 text-white cursor-pointer"
                         >
-                          <Edit3 className="w-3.5 h-3.5" />
-                          <span>সম্পাদনা</span>
+                          নিশ্চিত?
                         </button>
                         <button
                           type="button"
-                          onClick={() => onDeleteWithdrawal(rec.id)}
-                          className="min-h-[36px] px-2.5 py-1 rounded-lg border border-rose-200 dark:border-rose-900/60 text-xs font-medium text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 inline-flex items-center gap-1 cursor-pointer"
+                          onClick={() => setConfirmDeleteId(null)}
+                          className="px-1.5 py-1 text-[10px] font-semibold rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>মুছে ফেলুন</span>
+                          না
                         </button>
                       </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(row.id)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
+                        title="মুছে ফেলুন"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      <ModalDrawer
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        titleBn={
-          editingId ? 'টাকা উত্তোলন তথ্য সম্পাদনা' : 'নতুন টাকা উত্তোলন এন্ট্রি'
-        }
-        subtitleBn="উত্তোলনের তারিখ (DD-MM-YYYY), পেমেন্ট মাধ্যম এবং টাকার পরিমাণ"
-      >
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <DateInputDDMMYYYY
-              id="pay-date"
-              labelBn="উত্তোলনের তারিখ (DD-MM-YYYY)"
-              valueDDMMYYYY={date}
-              onChangeDDMMYYYY={setDate}
-            />
-            <FormInput
-              id="pay-voucher"
-              labelBn="ভাউচার / স্লিপ নম্বর"
-              placeholder="যেমন: VCH-২০২৬-০১"
-              value={voucherNo}
-              onChange={(e) => setVoucherNo(e.target.value)}
-            />
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                {editingItem ? 'উত্তোলন সম্পাদনা করুন' : 'নতুন বিল উত্তোলন যোগ করুন'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleSubmit} className="p-5 space-y-3.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <DatePickerInput
+                  label="তারিখ (DD-MM-YYYY)"
+                  value={date}
+                  onChange={setDate}
+                  required
+                />
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    উত্তোলিত টাকা (৳) *
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    placeholder="যেমন: 3000"
+                    required
+                    className="w-full px-3 py-2 text-sm rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-semibold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    কিস্তি / সপ্তাহ রেফারেন্স
+                  </label>
+                  <input
+                    type="text"
+                    value={weekReference}
+                    onChange={(e) => setWeekReference(e.target.value)}
+                    placeholder="যেমন: ১৭তম কিস্তি"
+                    className="w-full px-3 py-2 text-sm rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    পেমেন্ট মাধ্যম
+                  </label>
+                  <select
+                    value={paymentMethod}
+                    onChange={(e) => setPaymentMethod(e.target.value)}
+                    className="w-full px-3 py-2 text-sm rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                  >
+                    <option value="নগদ (Cash)">নগদ (Cash)</option>
+                    <option value="বিকাশ">বিকাশ</option>
+                    <option value="নগদ (Nagad)">নগদ (Nagad)</option>
+                    <option value="ব্যাংক ট্রান্সফার">ব্যাংক ট্রান্সফার</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  মন্তব্য
+                </label>
+                <input
+                  type="text"
+                  value={remarks}
+                  onChange={(e) => setRemarks(e.target.value)}
+                  placeholder="সংক্ষিপ্ত নোট"
+                  className="w-full px-3 py-2 text-sm rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                />
+              </div>
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="px-4 py-2 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
+                >
+                  বাতিল
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-xs font-bold rounded-xl bg-teal-700 hover:bg-teal-800 text-white cursor-pointer"
+                >
+                  সংরক্ষণ করুন
+                </button>
+              </div>
+            </form>
           </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <FormSelect
-              id="pay-method"
-              labelBn="পেমেন্ট মাধ্যম"
-              value={paymentMethod}
-              onChange={(e) => setPaymentMethod(e.target.value)}
-              options={PAYMENT_METHOD_OPTIONS.map((m) => ({ value: m, labelBn: m }))}
-            />
-            <FormInput
-              id="pay-amount"
-              labelBn="উত্তোলিত টাকার পরিমাণ (৳)"
-              placeholder="০.০০"
-              rightUnitBn="৳"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <FormInput
-              id="pay-week-ref"
-              labelBn="সপ্তাহ বা মাসের রেফারেন্স"
-              placeholder="যেমন: ২য় সপ্তাহের মজুরি"
-              value={weekReference}
-              onChange={(e) => setWeekReference(e.target.value)}
-            />
-            <FormInput
-              id="pay-approved-by"
-              labelBn="প্রদানকারী কর্মকর্তা / সুপারভাইজার"
-              placeholder="যেমন: ক্যাশ সেকশন"
-              value={approvedBy}
-              onChange={(e) => setApprovedBy(e.target.value)}
-            />
-          </div>
-
-          <FormTextarea
-            id="pay-remarks"
-            labelBn="সংক্ষিপ্ত মন্তব্য"
-            placeholder="প্রয়োজনীয় নোট লিখুন..."
-            value={remarks}
-            onChange={(e) => setRemarks(e.target.value)}
-          />
-
-          <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-200 dark:border-slate-800">
-            <button
-              type="button"
-              onClick={() => setIsModalOpen(false)}
-              className="min-h-[44px] px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-medium cursor-pointer"
-            >
-              বাতিল করুন
-            </button>
-            <button
-              type="submit"
-              className="min-h-[44px] px-5 py-2.5 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-sm font-semibold cursor-pointer"
-            >
-              সংরক্ষণ করুন
-            </button>
-          </div>
-        </form>
-      </ModalDrawer>
+        </div>
+      )}
     </div>
   );
 };

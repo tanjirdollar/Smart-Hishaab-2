@@ -173,7 +173,12 @@ export interface DashboardSummaryMetrics {
   totalLoanReceivable: number;
   totalLoanPayable: number;
   totalFundBalance: number;
-  // New weekly summary card metrics (Saturday to Thursday)
+  // All-time production & company settlement metrics
+  totalAllTimeEarnedWages: number;
+  totalAllTimeWithdrawals: number;
+  totalAllTimePieces: number;
+  totalAllTimeDozens: number;
+  // Weekly summary card metrics (Saturday to Thursday)
   thisWeekTotalPieces: number;
   thisWeekTotalDozens: number;
   thisWeekReceivedWages: number;

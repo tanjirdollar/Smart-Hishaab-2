@@ -34,6 +34,8 @@ export function toBengaliDigits(value: string | number | null | undefined): stri
   return String(value).replace(/[0-9]/g, (digit) => BENGALI_DIGITS[digit] ?? digit);
 }
 
+export const formatNumberBn = toBengaliDigits;
+
 /**
  * Normalizes Bengali digits to ASCII digits for search and input parsing.
  */
@@ -54,6 +56,8 @@ export function formatTaka(amount: number | null | undefined, showZeroWhenNull =
   });
   return `৳ ${toBengaliDigits(formattedNumber)}`;
 }
+
+export const formatCurrencyBDT = formatTaka;
 
 /**
  * Formats Dozens value cleanly in Bengali digits (up to 2 decimal places).

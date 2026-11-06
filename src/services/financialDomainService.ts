@@ -94,20 +94,20 @@ export function computeDashboardMetrics(
       .toFixed(2)
   );
 
-  // Total Earned vs Received across all production entries & wage periods (no double counting)
+  // Total Earned vs Withdrawn across all production entries & company payment withdrawals
   const allProdEarned = repo.productionEntries.reduce(
     (sum, e) => sum + (e.totalWage ?? 0),
     0
   );
-  const allProdReceived = repo.productionEntries.reduce((sum, e) => {
-    if (e.receivedWage !== null && e.receivedWage !== undefined && e.receivedWage > 0) {
-      return sum + e.receivedWage;
-    }
-    if (e.settlementStatus === 'settled') {
-      return sum + (e.totalWage ?? 0);
-    }
-    return sum;
-  }, 0);
+  const allProdPieces = repo.productionEntries.reduce(
+    (sum, e) => sum + (e.pieces ?? 0),
+    0
+  );
+  const allProdDozens = Number((allProdPieces / 12).toFixed(2));
+  const allProdExplicitReceived = repo.productionEntries.reduce(
+    (sum, e) => sum + (e.receivedWage ?? 0),
+    0
+  );
 
   const wageTableOutstanding = repo.wageRecords.reduce(
     (sum, w) => sum + (w.outstandingWage ?? 0),
@@ -119,10 +119,12 @@ export function computeDashboardMetrics(
     0
   );
 
-  const prodNetOutstanding = Math.max(
-    0,
-    allProdEarned - (allProdReceived + totalWithdrawals)
-  );
+  // Use paymentWithdrawals as the primary source of money withdrawn from the company;
+  // fall back to explicit receivedWage on entries only if no paymentWithdrawals exist.
+  const effectiveTotalWithdrawn =
+    totalWithdrawals > 0 ? totalWithdrawals : allProdExplicitReceived;
+
+  const prodNetOutstanding = Math.max(0, allProdEarned - effectiveTotalWithdrawn);
   const totalOutstandingWages = Number(
     (prodNetOutstanding + wageTableOutstanding).toFixed(2)
   );
@@ -164,6 +166,10 @@ export function computeDashboardMetrics(
     totalLoanReceivable,
     totalLoanPayable,
     totalFundBalance,
+    totalAllTimeEarnedWages: Number(allProdEarned.toFixed(2)),
+    totalAllTimeWithdrawals: Number(effectiveTotalWithdrawn.toFixed(2)),
+    totalAllTimePieces: allProdPieces,
+    totalAllTimeDozens: allProdDozens,
     thisWeekTotalPieces: currentWeekSummary.totalPieces,
     thisWeekTotalDozens: currentWeekSummary.totalDozens,
     thisWeekReceivedWages: currentWeekSummary.totalReceivedWages,
