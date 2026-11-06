@@ -274,14 +274,18 @@ export default function App() {
     }
   }, []);
 
-  // Automatically load the user's attached SmartHisab_Backup_2026-11-06.json on first load if not yet loaded
+  // Automatically load the user's attached SmartHisab_Backup_2026-11-06.json on first load or rehydrate missing photos
   useEffect(() => {
     let cancelled = false;
     const alreadyLoaded = localStorage.getItem(ATTACHED_BACKUP_IMPORTED_FLAG);
+    const hasMissingPhotos = repo.productionEntries.every(
+      (e) => !e.photos || e.photos.length === 0
+    );
     if (
       alreadyLoaded === 'true' &&
       repo.productionEntries.length > 0 &&
-      repo.paymentWithdrawals.length > 0
+      repo.paymentWithdrawals.length > 0 &&
+      !hasMissingPhotos
     ) {
       return;
     }
@@ -290,27 +294,41 @@ export default function App() {
       if (cancelled || !parsed) return;
       localStorage.setItem(ATTACHED_BACKUP_IMPORTED_FLAG, 'true');
       setRepo((prev) => {
-        if (
-          prev.productionEntries.length > 0 &&
-          prev.paymentWithdrawals.length > 0 &&
-          alreadyLoaded === 'true'
-        ) {
-          return prev;
+        const photoMapByFingerprint = new Map<string, ProductionEntry['photos']>();
+        for (const bkpEntry of parsed.state.productionEntries) {
+          if (bkpEntry.photos && bkpEntry.photos.length > 0) {
+            photoMapByFingerprint.set(
+              `${bkpEntry.date}|${bkpEntry.itemName}|${bkpEntry.pieces ?? 0}`,
+              bkpEntry.photos
+            );
+          }
         }
+
+        const enrichedExisting = prev.productionEntries.map((e) => {
+          if (e.photos && e.photos.length > 0) return e;
+          const matchedPhotos = photoMapByFingerprint.get(
+            `${e.date}|${e.itemName}|${e.pieces ?? 0}`
+          );
+          return matchedPhotos ? { ...e, photos: matchedPhotos } : e;
+        });
+
         const existingProdKeys = new Set(
-          prev.productionEntries.map(
+          enrichedExisting.map(
             (e) => `${e.date}|${e.itemName}|${e.pieces ?? 0}|${e.totalWage}`
           )
         );
-        const mergedProd = [
-          ...prev.productionEntries,
-          ...parsed.state.productionEntries.filter(
-            (e) =>
-              !existingProdKeys.has(
-                `${e.date}|${e.itemName}|${e.pieces ?? 0}|${e.totalWage}`
-              )
-          ),
-        ];
+        const mergedProd =
+          alreadyLoaded === 'true' && enrichedExisting.length > 0
+            ? enrichedExisting
+            : [
+                ...enrichedExisting,
+                ...parsed.state.productionEntries.filter(
+                  (e) =>
+                    !existingProdKeys.has(
+                      `${e.date}|${e.itemName}|${e.pieces ?? 0}|${e.totalWage}`
+                    )
+                ),
+              ];
 
         const nextState: ApplicationRepositoryState = {
           productionEntries:

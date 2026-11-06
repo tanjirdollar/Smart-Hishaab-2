@@ -1,20 +1,25 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Edit3,
-  FilePlus2,
-  Layers,
+  Eye,
+  Filter,
+  Image as ImageIcon,
   Mic,
   Play,
   Plus,
   RotateCcw,
   Scissors,
   Search,
+  ShieldAlert,
   Sparkles,
   Square,
   Trash2,
-  Wallet,
+  X,
 } from 'lucide-react';
 import {
   GARMENT_CATEGORY_OPTIONS,
@@ -56,8 +61,6 @@ import {
   MultiPhotoUpload,
 } from '../components/ui/FormFields';
 import { ModalDrawer } from '../components/ui/ModalDrawer';
-import { PageHeader } from '../components/ui/PageHeader';
-import { SummaryCard } from '../components/ui/SummaryCard';
 
 export interface ProductionLedgerPageProps {
   entries: ProductionEntry[];
@@ -200,10 +203,24 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [showInlineForm, setShowInlineForm] = useState(false);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
+  const [isFilterDropdownOpen, setIsFilterDropdownOpen] = useState(false);
   const [draft, setDraft] = useState<ProductionFormDraft>(createEmptyDraft);
   const [isSaving, setIsSaving] = useState(false);
   const [formErrorBn, setFormErrorBn] = useState<string | null>(null);
   const [statusBannerBn, setStatusBannerBn] = useState<string | null>(null);
+
+  // Secure delete confirmation state (prevents accidental single-touch delete)
+  const [entryPendingDelete, setEntryPendingDelete] =
+    useState<ProductionEntry | null>(null);
+  const [deleteSafetyChecked, setDeleteSafetyChecked] = useState(false);
+  const [isDeletingEntry, setIsDeletingEntry] = useState(false);
+
+  // Full-size photo preview modal state
+  const [previewPhotoModal, setPreviewPhotoModal] = useState<{
+    url: string;
+    title: string;
+    subtitle: string;
+  } | null>(null);
 
   // Automatic calculation:
   // Dozens = Pieces / 12 (or Pieces = Dozens * 12)
@@ -501,13 +518,61 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
     );
   };
 
-  const handleAddPhotos = (fileList: FileList) => {
+  const compressFileToDataUrl = (file: File): Promise<string> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const resultStr = typeof reader.result === 'string' ? reader.result : '';
+        if (!resultStr) {
+          resolve(URL.createObjectURL(file));
+          return;
+        }
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const maxDim = 720;
+            let { width, height } = img;
+            if (width > maxDim || height > maxDim) {
+              if (width > height) {
+                height = Math.round((height * maxDim) / width);
+                width = maxDim;
+              } else {
+                width = Math.round((width * maxDim) / height);
+                height = maxDim;
+              }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(img, 0, 0, width, height);
+              const compressed = canvas.toDataURL('image/jpeg', 0.75);
+              resolve(compressed);
+              return;
+            }
+          } catch {
+            // fallback to raw data URL
+          }
+          resolve(resultStr);
+        };
+        img.onerror = () => resolve(resultStr);
+        img.src = resultStr;
+      };
+      reader.onerror = () => resolve(URL.createObjectURL(file));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleAddPhotos = async (fileList: FileList) => {
     const filesArray = Array.from(fileList);
+    const dataUrls = await Promise.all(filesArray.map(compressFileToDataUrl));
     const added: UploadedPhotoPreview[] = filesArray.map((file, idx) => ({
       id: `photo-${Date.now()}-${idx}`,
       fileName: file.name,
       fileSize: file.size,
-      previewUrl: URL.createObjectURL(file),
+      previewUrl: dataUrls[idx],
+      storagePath: dataUrls[idx],
       mimeType: file.type || 'image/jpeg',
     }));
     setDraft((prev) => ({
@@ -522,6 +587,29 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       ...prev,
       photos: prev.photos.filter((p) => p.id !== photoId),
     }));
+  };
+
+  const handleRequestSecureDelete = (entry: ProductionEntry) => {
+    setEntryPendingDelete(entry);
+    setDeleteSafetyChecked(false);
+  };
+
+  const handleConfirmSecureDelete = async () => {
+    if (!entryPendingDelete || !deleteSafetyChecked || isDeletingEntry) return;
+    setIsDeletingEntry(true);
+    try {
+      await onDeleteEntry(entryPendingDelete.id);
+      setStatusBannerBn(
+        `"${entryPendingDelete.itemName || entryPendingDelete.garmentType}" (${formatDateDDMMYYYY(
+          entryPendingDelete.date,
+          true
+        )}) এন্ট্রিটি মুছে ফেলা হয়েছে।`
+      );
+      setEntryPendingDelete(null);
+      setDeleteSafetyChecked(false);
+    } finally {
+      setIsDeletingEntry(false);
+    }
   };
 
   const handleSubmitForm = async (e: React.FormEvent) => {
@@ -1191,50 +1279,67 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
     </form>
   );
 
-  return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      <PageHeader
-        moduleIndexBn="০২. প্রধান মডিউল · প্রোডাকশন হিসাব"
-        titleBn="প্রোডাকশন ইতিহাস, এআই ভয়েস এন্ট্রি ও কাজের সময় ট্র্যাকিং"
-        subtitleBn="প্রতিদিনের সেলাইকৃত পোশাকের পিস, স্বয়ংক্রিয় ডজন ও মজুরি হিসাব, অ্যানালগ ঘড়িতে কাজের সময় এবং রেট নিষ্পত্তি স্ট্যাটাস"
-        primaryActionLabelBn="নতুন প্রোডাকশন যোগ করুন"
-        primaryActionIcon={<Plus className="w-4 h-4" />}
-        onPrimaryAction={handleOpenAddModal}
-        secondaryActionLabelBn="এআই ভয়েস এন্ট্রি (AI Voice)"
-        secondaryActionIcon={<Mic className="w-4 h-4" />}
-        onSecondaryAction={handleOpenVoiceEntry}
-      />
+  // Count active dropdown filters (excluding search input)
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (filters.dateFrom) count++;
+    if (filters.dateTo) count++;
+    if (filters.itemName !== 'ALL') count++;
+    if (filters.category !== 'ALL') count++;
+    if (filters.size !== 'ALL') count++;
+    if (filters.color !== 'ALL') count++;
+    if (filters.workStatus !== 'ALL') count++;
+    if (filters.settlementStatus !== 'ALL') count++;
+    return count;
+  }, [filters]);
 
-      {/* Toggle Inline Form Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3">
-        <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-700 dark:text-slate-300 font-medium">
-          <Scissors className="w-4 h-4 text-teal-700 dark:text-teal-400 shrink-0" />
-          <span>
-            দ্রুত এন্ট্রির জন্য পাতার উপরে ফর্ম খুলুন অথবা মাইক্রোফোনে ভয়েস দিয়ে বলুন
-          </span>
+  return (
+    <div className="space-y-3.5 w-full max-w-full overflow-x-hidden">
+      {/* Compact Top Bar: Title + Quick Summary + Action Buttons */}
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3.5 sm:px-5 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
+        <div className="flex flex-wrap items-center justify-between sm:justify-start gap-2">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-xl bg-teal-50 dark:bg-teal-950/80 text-teal-700 dark:text-teal-300 flex items-center justify-center shrink-0">
+              <Scissors className="w-4 h-4" />
+            </div>
+            <div>
+              <h1 className="text-base sm:text-lg font-bold text-slate-900 dark:text-slate-100 leading-tight">
+                প্রোডাকশন খাতা
+              </h1>
+              <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 font-mono">
+                মোট {toBengaliDigits(sortedFilteredEntries.length)}টি কাজ ·{' '}
+                {toBengaliDigits(filteredSummary.rangePieces)} পিস (
+                {formatDozensBn(filteredSummary.rangeDozens)} ডজন) ·{' '}
+                <strong className="text-teal-700 dark:text-teal-300">
+                  {formatTaka(filteredSummary.rangeEarned, true)}
+                </strong>
+              </p>
+            </div>
+          </div>
         </div>
+
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={handleOpenVoiceEntry}
-            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-teal-50 dark:bg-teal-950/70 text-teal-800 dark:text-teal-200 border border-teal-200 dark:border-teal-800 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+            className="flex-1 sm:flex-initial min-h-[40px] px-3 py-1.5 rounded-xl border border-teal-300 dark:border-teal-800 bg-teal-50/70 dark:bg-teal-950/50 text-teal-800 dark:text-teal-200 text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer"
           >
-            <Mic className="w-3.5 h-3.5" />
+            <Mic className="w-3.5 h-3.5 shrink-0" />
             <span>ভয়েস এন্ট্রি</span>
           </button>
           <button
             type="button"
-            onClick={() => setShowInlineForm((prev) => !prev)}
-            className="min-h-[38px] px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1.5 cursor-pointer"
+            onClick={handleOpenAddModal}
+            className="flex-1 sm:flex-initial min-h-[40px] px-3.5 py-1.5 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
           >
-            <FilePlus2 className="w-3.5 h-3.5" />
-            <span>{showInlineForm ? 'ফর্ম প্যানেল লুকান' : 'পাতার উপরে ফর্ম খুলুন'}</span>
+            <Plus className="w-4 h-4 shrink-0" />
+            <span>নতুন প্রোডাকশন</span>
           </button>
         </div>
       </div>
 
       {statusBannerBn && (
-        <div className="rounded-2xl border border-teal-200 dark:border-teal-800/80 bg-teal-50/70 dark:bg-teal-950/40 px-4 py-3 flex items-center justify-between gap-3 text-xs sm:text-sm text-teal-900 dark:text-teal-200">
+        <div className="rounded-xl border border-teal-200 dark:border-teal-800/80 bg-teal-50/70 dark:bg-teal-950/40 px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs text-teal-900 dark:text-teal-200">
           <span className="break-words">{statusBannerBn}</span>
           <button
             type="button"
@@ -1246,70 +1351,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         </div>
       )}
 
-      {/* Daily & Date-Range Production Summaries */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
-        <SummaryCard
-          titleBn="আজকের প্রোডাকশন ও মজুরি"
-          amount={filteredSummary.todayEarned}
-          subtitleBn={`আজ: ${toBengaliDigits(
-            filteredSummary.todayPieces
-          )} পিস (${formatDozensBn(filteredSummary.todayDozens)} ডজন)`}
-          icon={<Scissors className="w-5 h-5" />}
-          tone="accent"
-        />
-        <SummaryCard
-          titleBn="তালিকাভুক্ত মোট প্রোডাকশন"
-          amount={null}
-          customValueBn={`${toBengaliDigits(
-            filteredSummary.rangePieces
-          )} পিস · ${formatDozensBn(filteredSummary.rangeDozens)} ডজন`}
-          subtitleBn={`ফিল্টারকৃত এন্ট্রি: ${toBengaliDigits(
-            sortedFilteredEntries.length
-          )} টি`}
-          icon={<Layers className="w-5 h-5" />}
-          tone="default"
-        />
-        <SummaryCard
-          titleBn="তালিকাভুক্ত মোট অর্জিত মজুরি"
-          amount={filteredSummary.rangeEarned}
-          subtitleBn={`নিষ্পত্তি হয়েছে: ${formatTaka(
-            filteredSummary.rangeSettled,
-            true
-          )}`}
-          icon={<CheckCircle2 className="w-5 h-5" />}
-          tone="positive"
-        />
-        <SummaryCard
-          titleBn="রেট নিষ্পত্তি হয়নি (মোট)"
-          amount={filteredSummary.rangeUnsettled}
-          subtitleBn="নিষ্পত্তি অপেক্ষমাণ এন্ট্রির মজুরি"
-          icon={<Wallet className="w-5 h-5" />}
-          tone="warning"
-        />
-      </div>
-
-      {/* Visual Status Legend */}
-      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5 sm:p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
-        <span className="font-semibold text-slate-700 dark:text-slate-300">
-          স্ট্যাটাস রঙের নির্দেশিকা (কাজের অবস্থা ও রেট নিষ্পত্তি স্ট্যাটাস সম্পূর্ণ স্বাধীন):
-        </span>
-        <div className="flex flex-wrap items-center gap-4 text-slate-700 dark:text-slate-300">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-xs bg-sky-500 inline-block" />
-            <span>কাজ চলছে (নীল)</span>
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-xs bg-amber-500 inline-block" />
-            <span>রেট নিষ্পত্তি হয়নি (কমলা/হলুদ)</span>
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-xs bg-emerald-500 inline-block" />
-            <span>নিষ্পত্তি হয়েছে (সবুজ)</span>
-          </span>
-        </div>
-      </div>
-
-      {/* Inline Structured Form (when toggled open) */}
+      {/* Inline Structured Form (only if explicitly opened) */}
       {showInlineForm && (
         <section
           aria-labelledby="production-form-heading"
@@ -1327,162 +1369,210 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         </section>
       )}
 
-      {/* Search & Comprehensive Filters */}
+      {/* Compact Search Bar + Collapsible Filter Dropdown Menu */}
       <section
         aria-label="প্রোডাকশন ফিল্টার ও অনুসন্ধান"
-        className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 space-y-4"
+        className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-2.5 sm:p-3 space-y-2.5"
       >
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-            অনুসন্ধান ও ফিল্টার (তারিখ পরিসর, আইটেম, ক্যাটাগরি, সাইজ, রঙ ও স্ট্যাটাস)
-          </h2>
+        <div className="flex items-center gap-2">
+          {/* Compact Search Input */}
+          <div className="relative flex-1 flex items-center">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 pointer-events-none" />
+            <input
+              id="prod-search-input"
+              type="search"
+              value={filters.searchQuery}
+              onChange={(e) =>
+                setFilters((prev) => ({
+                  ...prev,
+                  searchQuery: e.target.value,
+                }))
+              }
+              placeholder="আইটেম, ক্যাটাগরি, সাইজ বা তারিখ খুঁজুন..."
+              className="w-full min-h-[40px] pl-9 pr-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950 text-slate-900 dark:text-slate-100 text-xs sm:text-sm"
+            />
+          </div>
+
+          {/* Filter Dropdown Button */}
           <button
             type="button"
-            onClick={resetFilters}
-            className="min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+            onClick={() => setIsFilterDropdownOpen((prev) => !prev)}
+            className={`min-h-[40px] px-3 py-1.5 rounded-xl border text-xs font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+              isFilterDropdownOpen || activeFilterCount > 0
+                ? 'border-teal-600 bg-teal-50 dark:bg-teal-950/70 text-teal-800 dark:text-teal-200'
+                : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-50'
+            }`}
           >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>রিসেট</span>
+            <Filter className="w-3.5 h-3.5" />
+            <span>ফিল্টার</span>
+            {activeFilterCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded-md bg-teal-700 text-white text-[10px] font-mono">
+                {toBengaliDigits(activeFilterCount)}
+              </span>
+            )}
+            {isFilterDropdownOpen ? (
+              <ChevronUp className="w-3.5 h-3.5" />
+            ) : (
+              <ChevronDown className="w-3.5 h-3.5" />
+            )}
           </button>
+
+          {/* Quick Reset Button when filters or search are active */}
+          {(activeFilterCount > 0 || filters.searchQuery.trim() !== '') && (
+            <button
+              type="button"
+              onClick={resetFilters}
+              title="সকল ফিল্টার রিসেট করুন"
+              className="min-h-[40px] px-2.5 py-1.5 rounded-xl border border-rose-200 dark:border-rose-900/60 text-xs font-semibold text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40 inline-flex items-center gap-1 cursor-pointer shrink-0"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">রিসেট</span>
+            </button>
+          )}
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          {/* Search */}
-          <div className="space-y-1.5 sm:col-span-2">
-            <label
-              htmlFor="prod-search-input"
-              className="block text-sm font-medium text-slate-700 dark:text-slate-300"
-            >
-              অনুসন্ধান করুন
-            </label>
-            <div className="relative flex items-center">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 pointer-events-none" />
-              <input
-                id="prod-search-input"
-                type="search"
-                value={filters.searchQuery}
+        {/* Collapsible Dropdown Filter Menu */}
+        {isFilterDropdownOpen && (
+          <div className="pt-2.5 border-t border-slate-200 dark:border-slate-800 space-y-3 animate-in fade-in duration-150">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
+              <FormSelect
+                id="prod-filter-category"
+                labelBn="ক্যাটাগরি"
+                value={filters.category}
+                onChange={(e) =>
+                  setFilters((prev) => ({ ...prev, category: e.target.value }))
+                }
+                options={[
+                  { value: 'ALL', labelBn: 'সকল ক্যাটাগরি' },
+                  ...filterCategoryOptions.map((cat) => ({
+                    value: cat,
+                    labelBn: cat,
+                  })),
+                ]}
+              />
+
+              <FormSelect
+                id="prod-filter-size"
+                labelBn="সাইজ"
+                value={filters.size}
+                onChange={(e) =>
+                  setFilters((prev) => ({ ...prev, size: e.target.value }))
+                }
+                options={[
+                  { value: 'ALL', labelBn: 'সকল সাইজ' },
+                  ...GARMENT_SIZE_OPTIONS.map((sz) => ({
+                    value: sz,
+                    labelBn: sz,
+                  })),
+                ]}
+              />
+
+              <FormSelect
+                id="prod-filter-work-status"
+                labelBn="কাজের অবস্থা"
+                value={filters.workStatus}
                 onChange={(e) =>
                   setFilters((prev) => ({
                     ...prev,
-                    searchQuery: e.target.value,
+                    workStatus: e.target.value as 'ALL' | WorkStatus,
                   }))
                 }
-                placeholder="আইটেমের নাম, ক্যাটাগরি, নোট বা তারিখ খুঁজুন..."
-                className="w-full min-h-[44px] pl-9 pr-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 text-sm"
+                options={[
+                  { value: 'ALL', labelBn: 'সকল কাজের অবস্থা' },
+                  { value: 'in_progress', labelBn: 'কাজ চলছে' },
+                  { value: 'completed', labelBn: 'কাজ সম্পন্ন' },
+                ]}
+              />
+
+              <FormSelect
+                id="prod-filter-settlement-status"
+                labelBn="রেট নিষ্পত্তি"
+                value={filters.settlementStatus}
+                onChange={(e) =>
+                  setFilters((prev) => ({
+                    ...prev,
+                    settlementStatus: e.target.value as 'ALL' | SettlementStatus,
+                  }))
+                }
+                options={[
+                  { value: 'ALL', labelBn: 'সকল নিষ্পত্তি স্ট্যাটাস' },
+                  { value: 'pending', labelBn: 'রেট নিষ্পত্তি হয়নি' },
+                  { value: 'settled', labelBn: 'নিষ্পত্তি হয়েছে' },
+                ]}
+              />
+
+              <FormSelect
+                id="prod-filter-item"
+                labelBn="আইটেমের নাম"
+                value={filters.itemName}
+                onChange={(e) =>
+                  setFilters((prev) => ({ ...prev, itemName: e.target.value }))
+                }
+                options={[
+                  { value: 'ALL', labelBn: 'সকল আইটেম' },
+                  ...filterItemOptions.map((item) => ({
+                    value: item,
+                    labelBn: item,
+                  })),
+                ]}
+              />
+
+              <FormSelect
+                id="prod-filter-color"
+                labelBn="রঙ"
+                value={filters.color}
+                onChange={(e) =>
+                  setFilters((prev) => ({ ...prev, color: e.target.value }))
+                }
+                options={[
+                  { value: 'ALL', labelBn: 'সকল রঙ' },
+                  ...availableColors.map((clr) => ({
+                    value: clr,
+                    labelBn: clr,
+                  })),
+                ]}
+              />
+
+              <DateInputDDMMYYYY
+                id="prod-filter-date-from"
+                labelBn="শুরুর তারিখ"
+                valueDDMMYYYY={filters.dateFrom}
+                onChangeDDMMYYYY={(val) =>
+                  setFilters((prev) => ({ ...prev, dateFrom: val }))
+                }
+                placeholderBn="শুরুর তারিখ"
+              />
+
+              <DateInputDDMMYYYY
+                id="prod-filter-date-to"
+                labelBn="শেষের তারিখ"
+                valueDDMMYYYY={filters.dateTo}
+                onChangeDDMMYYYY={(val) =>
+                  setFilters((prev) => ({ ...prev, dateTo: val }))
+                }
+                placeholderBn="শেষের তারিখ"
               />
             </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800/80 text-xs">
+              <button
+                type="button"
+                onClick={resetFilters}
+                className="text-rose-600 dark:text-rose-400 font-semibold inline-flex items-center gap-1 cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>সব ফিল্টার মুছুন</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsFilterDropdownOpen(false)}
+                className="px-3.5 py-1.5 rounded-lg bg-teal-700 text-white font-bold cursor-pointer"
+              >
+                ফিল্টার বন্ধ করুন ({toBengaliDigits(sortedFilteredEntries.length)}টি ফলাফল)
+              </button>
+            </div>
           </div>
-
-          {/* Date Range From */}
-          <DateInputDDMMYYYY
-            id="prod-filter-date-from"
-            labelBn="শুরুর তারিখ (DD-MM-YYYY)"
-            valueDDMMYYYY={filters.dateFrom}
-            onChangeDDMMYYYY={(val) =>
-              setFilters((prev) => ({ ...prev, dateFrom: val }))
-            }
-            placeholderBn="শুরুর তারিখ"
-          />
-
-          {/* Date Range To */}
-          <DateInputDDMMYYYY
-            id="prod-filter-date-to"
-            labelBn="শেষের তারিখ (DD-MM-YYYY)"
-            valueDDMMYYYY={filters.dateTo}
-            onChangeDDMMYYYY={(val) =>
-              setFilters((prev) => ({ ...prev, dateTo: val }))
-            }
-            placeholderBn="শেষের তারিখ"
-          />
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
-          <FormSelect
-            id="prod-filter-item"
-            labelBn="আইটেমের নাম"
-            value={filters.itemName}
-            onChange={(e) =>
-              setFilters((prev) => ({ ...prev, itemName: e.target.value }))
-            }
-            options={[
-              { value: 'ALL', labelBn: 'সকল আইটেম' },
-              ...filterItemOptions.map((item) => ({ value: item, labelBn: item })),
-            ]}
-          />
-
-          <FormSelect
-            id="prod-filter-category"
-            labelBn="ক্যাটাগরি"
-            value={filters.category}
-            onChange={(e) =>
-              setFilters((prev) => ({ ...prev, category: e.target.value }))
-            }
-            options={[
-              { value: 'ALL', labelBn: 'সকল ক্যাটাগরি' },
-              ...filterCategoryOptions.map((cat) => ({ value: cat, labelBn: cat })),
-            ]}
-          />
-
-          <FormSelect
-            id="prod-filter-size"
-            labelBn="সাইজ"
-            value={filters.size}
-            onChange={(e) =>
-              setFilters((prev) => ({ ...prev, size: e.target.value }))
-            }
-            options={[
-              { value: 'ALL', labelBn: 'সকল সাইজ' },
-              ...GARMENT_SIZE_OPTIONS.map((sz) => ({ value: sz, labelBn: sz })),
-            ]}
-          />
-
-          <FormSelect
-            id="prod-filter-color"
-            labelBn="রঙ"
-            value={filters.color}
-            onChange={(e) =>
-              setFilters((prev) => ({ ...prev, color: e.target.value }))
-            }
-            options={[
-              { value: 'ALL', labelBn: 'সকল রঙ' },
-              ...availableColors.map((clr) => ({ value: clr, labelBn: clr })),
-            ]}
-          />
-
-          <FormSelect
-            id="prod-filter-work-status"
-            labelBn="কাজের অবস্থা"
-            value={filters.workStatus}
-            onChange={(e) =>
-              setFilters((prev) => ({
-                ...prev,
-                workStatus: e.target.value as 'ALL' | WorkStatus,
-              }))
-            }
-            options={[
-              { value: 'ALL', labelBn: 'সকল কাজের অবস্থা' },
-              { value: 'in_progress', labelBn: 'কাজ চলছে' },
-              { value: 'completed', labelBn: 'কাজ সম্পন্ন' },
-            ]}
-          />
-
-          <FormSelect
-            id="prod-filter-settlement-status"
-            labelBn="রেট নিষ্পত্তি স্ট্যাটাস"
-            value={filters.settlementStatus}
-            onChange={(e) =>
-              setFilters((prev) => ({
-                ...prev,
-                settlementStatus: e.target.value as 'ALL' | SettlementStatus,
-              }))
-            }
-            options={[
-              { value: 'ALL', labelBn: 'সকল নিষ্পত্তি স্ট্যাটাস' },
-              { value: 'pending', labelBn: 'রেট নিষ্পত্তি হয়নি' },
-              { value: 'settled', labelBn: 'নিষ্পত্তি হয়েছে' },
-            ]}
-          />
-        </div>
+        )}
       </section>
 
       {/* Production History Section: Mobile Cards (< lg) + Desktop Table (>= lg) */}
@@ -1490,42 +1580,14 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         aria-labelledby="production-history-heading"
         className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden"
       >
-        <div className="px-4 sm:px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h2
-              id="production-history-heading"
-              className="text-base font-bold text-slate-900 dark:text-slate-100"
-            >
-              প্রোডাকশন ইতিহাস (সর্বশেষ এন্ট্রি সবার উপরে)
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              মোবাইলে কার্ড ভিউ এবং ডেস্কটপে বিস্তারিত টেবিল ভিউ
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={handleOpenVoiceEntry}
-              className="min-h-[42px] px-3.5 py-2 rounded-xl border border-teal-300 dark:border-teal-800 text-teal-800 dark:text-teal-200 text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <Mic className="w-4 h-4" />
-              <span>ভয়েস এন্ট্রি</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleOpenAddModal}
-              className="min-h-[42px] px-3.5 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>নতুন প্রোডাকশন যোগ করুন</span>
-            </button>
-          </div>
-        </div>
+        <h2 id="production-history-heading" className="sr-only">
+          প্রোডাকশন ইতিহাস
+        </h2>
 
         {sortedFilteredEntries.length === 0 ? (
           <EmptyDataState
             titleBn="কোনো প্রোডাকশন ইতিহাস পাওয়া যায়নি"
-            descriptionBn="নতুন প্রোডাকশন যোগ করুন বাটনে ক্লিক করে, এআই ভয়েস এন্ট্রি ব্যবহার করে অথবা ডেটা ইমপোর্ট মডিউল থেকে আপনার Google Sheets / Excel ফাইল ইমপোর্ট করুন।"
+            descriptionBn="নতুন প্রোডাকশন বাটনে ক্লিক করে, ভয়েস এন্ট্রি ব্যবহার করে অথবা ইমপোর্ট মডিউল থেকে আপনার ফাইল ইমপোর্ট করুন।"
             tableNameHint="production_entries"
             actionLabelBn="নতুন প্রোডাকশন যোগ করুন"
             onActionClick={handleOpenAddModal}
@@ -1533,30 +1595,72 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
           />
         ) : (
           <>
-            {/* Mobile & Tablet Responsive Cards View (< lg) — Zero Horizontal Overflow */}
-            <div className="lg:hidden divide-y divide-slate-200 dark:divide-slate-800 p-3 sm:p-4 space-y-3">
+            {/* Mobile & Tablet Responsive Cards View (< lg) */}
+            <div className="lg:hidden p-3 sm:p-4 space-y-3">
               {sortedFilteredEntries.map((entry) => {
                 const visual = getEntryVisualCardStyle(entry);
+                const validPhotos = (entry.photos || []).filter(
+                  (p) => p.previewUrl || p.storagePath
+                );
+                const primaryPhotoUrl =
+                  validPhotos[0]?.previewUrl || validPhotos[0]?.storagePath || null;
+
                 return (
                   <div
                     key={entry.id}
                     className={`rounded-2xl border p-3.5 sm:p-4 space-y-3 transition-colors ${visual.cardBorderBg}`}
                   >
-                    {/* Top Row: Date + Total Earned Wage */}
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                          তারিখ: {formatDateDDMMYYYY(entry.date, true)}
-                        </p>
-                        <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-slate-100 break-words mt-0.5">
-                          {entry.itemName || entry.garmentType}
-                        </h3>
-                        <p className="text-xs text-slate-600 dark:text-slate-400 break-words">
-                          ক্যাটাগরি: {entry.category || '—'} · সাইজ:{' '}
-                          {entry.size || '—'}
-                          {entry.color ? ` · রঙ: ${entry.color}` : ''}
-                        </p>
+                    {/* Top Row: Photo Thumbnail (if uploaded) + Item Details + Total Earned Wage */}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-3 min-w-0 flex-1">
+                        {primaryPhotoUrl && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPreviewPhotoModal({
+                                url: primaryPhotoUrl,
+                                title: entry.itemName || entry.garmentType,
+                                subtitle: `তারিখ: ${formatDateDDMMYYYY(
+                                  entry.date,
+                                  true
+                                )} · ${toBengaliDigits(entry.pieces ?? 0)} পিস (${formatDozensBn(
+                                  entry.dozens
+                                )} ডজন)`,
+                              })
+                            }
+                            className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden border-2 border-white dark:border-slate-700 shadow-xs shrink-0 group cursor-pointer bg-slate-100 dark:bg-slate-800"
+                            title="ছবি বড় করে দেখতে ট্যাপ করুন"
+                          >
+                            <img
+                              src={primaryPhotoUrl}
+                              alt={entry.itemName || 'পোশাকের ছবি'}
+                              className="w-full h-full object-cover"
+                              loading="lazy"
+                            />
+                            <span className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded-md bg-slate-900/75 text-white text-[10px] font-semibold flex items-center gap-0.5">
+                              <Eye className="w-2.5 h-2.5" />
+                              {validPhotos.length > 1
+                                ? toBengaliDigits(validPhotos.length)
+                                : ''}
+                            </span>
+                          </button>
+                        )}
+
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                            তারিখ: {formatDateDDMMYYYY(entry.date, true)}
+                          </p>
+                          <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-slate-100 break-words mt-0.5">
+                            {entry.itemName || entry.garmentType}
+                          </h3>
+                          <p className="text-xs text-slate-600 dark:text-slate-400 break-words mt-0.5">
+                            ক্যাটাগরি: {entry.category || '—'} · সাইজ:{' '}
+                            {entry.size || '—'}
+                            {entry.color ? ` · রঙ: ${entry.color}` : ''}
+                          </p>
+                        </div>
                       </div>
+
                       <div className="text-right shrink-0">
                         <p className="text-base sm:text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-slate-100">
                           {formatTaka(entry.totalWage, true)}
@@ -1566,6 +1670,41 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                         </p>
                       </div>
                     </div>
+
+                    {/* Additional Photo Strip if multiple photos uploaded */}
+                    {validPhotos.length > 1 && (
+                      <div className="flex items-center gap-2 overflow-x-auto py-1">
+                        {validPhotos.map((photo, pIdx) => {
+                          const url = photo.previewUrl || photo.storagePath || '';
+                          return (
+                            <button
+                              key={photo.id || pIdx}
+                              type="button"
+                              onClick={() =>
+                                setPreviewPhotoModal({
+                                  url,
+                                  title: `${entry.itemName || entry.garmentType} (ছবি ${toBengaliDigits(
+                                    pIdx + 1
+                                  )})`,
+                                  subtitle: `তারিখ: ${formatDateDDMMYYYY(
+                                    entry.date,
+                                  true
+                                  )}`,
+                                })
+                              }
+                              className="w-12 h-12 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 shrink-0 cursor-pointer"
+                            >
+                              <img
+                                src={url}
+                                alt={`ছবি ${pIdx + 1}`}
+                                className="w-full h-full object-cover"
+                                loading="lazy"
+                              />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
 
                     {/* Quantities & Independent Statuses */}
                     <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200/70 dark:border-slate-800/70 text-xs">
@@ -1591,32 +1730,40 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                     </div>
 
                     {/* Work Timing Information */}
-                    <div className="rounded-xl bg-white/80 dark:bg-slate-900/80 border border-slate-200/70 dark:border-slate-800/70 p-2.5 text-xs space-y-1">
-                      <div className="flex flex-wrap items-center justify-between gap-1">
-                        <span className="text-slate-600 dark:text-slate-400">
-                          শুরু:{' '}
-                          <strong className="font-mono">
-                            {formatWorkTimestampBn(entry.startWorkTime)}
-                          </strong>
-                        </span>
-                        <span className="text-slate-600 dark:text-slate-400">
-                          শেষ:{' '}
-                          <strong className="font-mono">
-                            {formatWorkTimestampBn(entry.endWorkTime)}
-                          </strong>
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
-                        <span>
-                          কাজের সময়কাল: {formatDurationBn(entry.workDurationMinutes)}
-                        </span>
-                        {entry.shortDescription && (
-                          <span className="truncate max-w-[160px]">
-                            নোট: {entry.shortDescription}
-                          </span>
+                    {(entry.startWorkTime ||
+                      entry.endWorkTime ||
+                      entry.shortDescription) && (
+                      <div className="rounded-xl bg-white/80 dark:bg-slate-900/80 border border-slate-200/70 dark:border-slate-800/70 p-2.5 text-xs space-y-1">
+                        {(entry.startWorkTime || entry.endWorkTime) && (
+                          <div className="flex flex-wrap items-center justify-between gap-1">
+                            <span className="text-slate-600 dark:text-slate-400">
+                              শুরু:{' '}
+                              <strong className="font-mono">
+                                {formatWorkTimestampBn(entry.startWorkTime)}
+                              </strong>
+                            </span>
+                            <span className="text-slate-600 dark:text-slate-400">
+                              শেষ:{' '}
+                              <strong className="font-mono">
+                                {formatWorkTimestampBn(entry.endWorkTime)}
+                              </strong>
+                            </span>
+                          </div>
                         )}
+                        <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
+                          {(entry.startWorkTime || entry.endWorkTime) && (
+                            <span>
+                              সময়কাল: {formatDurationBn(entry.workDurationMinutes)}
+                            </span>
+                          )}
+                          {entry.shortDescription && (
+                            <span className="truncate max-w-[220px]">
+                              নোট: {entry.shortDescription}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
+                    )}
 
                     {/* Mobile Touch Action Buttons */}
                     <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
@@ -1624,7 +1771,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                         <button
                           type="button"
                           onClick={() => handleQuickStartWorkOnEntry(entry)}
-                          className="min-h-[38px] px-2.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
                         >
                           <Play className="w-3 h-3" />
                           <span>কাজ শুরু</span>
@@ -1632,7 +1779,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                         <button
                           type="button"
                           onClick={() => handleQuickEndWorkOnEntry(entry)}
-                          className="min-h-[38px] px-2.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
                         >
                           <Square className="w-3 h-3" />
                           <span>কাজ শেষ</span>
@@ -1640,13 +1787,13 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                         <button
                           type="button"
                           onClick={() => handleQuickToggleSettlementOnEntry(entry)}
-                          className="min-h-[38px] px-2.5 py-1.5 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
                         >
                           <CheckCircle2 className="w-3.5 h-3.5" />
                           <span>
                             {entry.settlementStatus === 'settled'
-                              ? 'রেট নিষ্পত্তি হয়নি করুন'
-                              : 'নিষ্পত্তি হয়েছে করুন'}
+                              ? 'রেট নিষ্পত্তি হয়নি'
+                              : 'নিষ্পত্তি হয়েছে'}
                           </span>
                         </button>
                       </div>
@@ -1655,15 +1802,15 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                         <button
                           type="button"
                           onClick={() => handleOpenEditModal(entry)}
-                          className="min-h-[38px] px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1 cursor-pointer"
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1 cursor-pointer"
                         >
                           <Edit3 className="w-3.5 h-3.5" />
                           <span>সম্পাদনা</span>
                         </button>
                         <button
                           type="button"
-                          onClick={() => onDeleteEntry(entry.id)}
-                          className="min-h-[38px] px-2.5 py-1.5 rounded-lg border border-rose-200 dark:border-rose-900/60 text-xs font-medium text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 inline-flex items-center gap-1 cursor-pointer"
+                          onClick={() => handleRequestSecureDelete(entry)}
+                          className="min-h-[36px] px-2.5 py-1 rounded-lg border border-rose-200 dark:border-rose-900/60 text-xs font-medium text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 inline-flex items-center gap-1 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                           <span>মুছুন</span>
@@ -1680,7 +1827,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/60 text-xs font-semibold text-slate-600 dark:text-slate-400">
-                    <th className="py-3.5 px-4 whitespace-nowrap">তারিখ (DD-MM-YYYY)</th>
+                    <th className="py-3.5 px-4 whitespace-nowrap">তারিখ ও ছবি</th>
                     <th className="py-3.5 px-4">আইটেম ও ক্যাটাগরি</th>
                     <th className="py-3.5 px-4">সাইজ ও রঙ</th>
                     <th className="py-3.5 px-4 text-right whitespace-nowrap">
@@ -1699,13 +1846,53 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
                   {sortedFilteredEntries.map((entry) => {
                     const visual = getEntryVisualCardStyle(entry);
+                    const validPhotos = (entry.photos || []).filter(
+                      (p) => p.previewUrl || p.storagePath
+                    );
+                    const primaryPhotoUrl =
+                      validPhotos[0]?.previewUrl ||
+                      validPhotos[0]?.storagePath ||
+                      null;
+
                     return (
                       <tr
                         key={entry.id}
                         className={`transition-colors ${visual.cardBorderBg}`}
                       >
                         <td className="py-3.5 px-4 font-mono tabular-nums whitespace-nowrap text-slate-800 dark:text-slate-200 align-top">
-                          {formatDateDDMMYYYY(entry.date, true)}
+                          <div className="flex items-center gap-2.5">
+                            {primaryPhotoUrl ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setPreviewPhotoModal({
+                                    url: primaryPhotoUrl,
+                                    title: entry.itemName || entry.garmentType,
+                                    subtitle: `তারিখ: ${formatDateDDMMYYYY(
+                                      entry.date,
+                                      true
+                                    )} · ${toBengaliDigits(
+                                      entry.pieces ?? 0
+                                    )} পিস`,
+                                  })
+                                }
+                                className="w-12 h-12 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 shrink-0 cursor-pointer relative group"
+                                title="ছবি বড় করে দেখুন"
+                              >
+                                <img
+                                  src={primaryPhotoUrl}
+                                  alt={entry.itemName || 'ছবি'}
+                                  className="w-full h-full object-cover"
+                                  loading="lazy"
+                                />
+                              </button>
+                            ) : (
+                              <div className="w-12 h-12 rounded-xl border border-dashed border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-400 shrink-0">
+                                <ImageIcon className="w-4 h-4" />
+                              </div>
+                            )}
+                            <span>{formatDateDDMMYYYY(entry.date, true)}</span>
+                          </div>
                         </td>
                         <td className="py-3.5 px-4 align-top">
                           <p className="font-bold text-slate-900 dark:text-slate-100">
@@ -1807,7 +1994,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                               </button>
                               <button
                                 type="button"
-                                onClick={() => onDeleteEntry(entry.id)}
+                                onClick={() => handleRequestSecureDelete(entry)}
                                 className="min-h-[34px] px-2.5 py-1 rounded-lg border border-rose-200 dark:border-rose-900/60 text-xs font-medium text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 inline-flex items-center gap-1 cursor-pointer"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -1825,6 +2012,120 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
           </>
         )}
       </section>
+
+      {/* Secure 2-Step Delete Confirmation Modal (Prevents Accidental Touch Deletion) */}
+      <ModalDrawer
+        isOpen={Boolean(entryPendingDelete)}
+        onClose={() => {
+          if (!isDeletingEntry) {
+            setEntryPendingDelete(null);
+            setDeleteSafetyChecked(false);
+          }
+        }}
+        titleBn="এন্ট্রি মুছে ফেলার নিরাপত্তা নিশ্চিতকরণ"
+        subtitleBn="ভুলবশত টাচ লেগে কোনো হিসাব যেন মুছে না যায় সেজন্য নিচের তথ্য যাচাই করুন"
+        maxWidthClass="max-w-md"
+      >
+        {entryPendingDelete && (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-rose-200 dark:border-rose-900/80 bg-rose-50/70 dark:bg-rose-950/40 p-4 space-y-2">
+              <div className="flex items-center gap-2 text-rose-800 dark:text-rose-200 font-bold text-sm">
+                <ShieldAlert className="w-5 h-5 text-rose-600 shrink-0" />
+                <span>আপনি কি এই প্রোডাকশন হিসাবটি মুছে ফেলতে চান?</span>
+              </div>
+              <div className="rounded-xl bg-white dark:bg-slate-900 border border-rose-100 dark:border-rose-900/50 p-3 text-xs space-y-1">
+                <p className="text-slate-500 dark:text-slate-400">
+                  তারিখ: <strong>{formatDateDDMMYYYY(entryPendingDelete.date, true)}</strong>
+                </p>
+                <p className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                  আইটেম: {entryPendingDelete.itemName || entryPendingDelete.garmentType}
+                </p>
+                <p className="text-slate-700 dark:text-slate-300">
+                  পরিমাণ: <strong>{toBengaliDigits(entryPendingDelete.pieces ?? 0)} পিস</strong> ({formatDozensBn(entryPendingDelete.dozens)} ডজন) · মজুরি:{' '}
+                  <strong className="text-teal-700 dark:text-teal-300">
+                    {formatTaka(entryPendingDelete.totalWage, true)}
+                  </strong>
+                </p>
+              </div>
+            </div>
+
+            <label className="flex items-start gap-2.5 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 text-xs sm:text-sm cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={deleteSafetyChecked}
+                onChange={(e) => setDeleteSafetyChecked(e.target.checked)}
+                className="w-4 h-4 mt-0.5 rounded text-rose-600 shrink-0"
+              />
+              <span className="font-semibold text-slate-800 dark:text-slate-200">
+                হ্যাঁ, আমি জেনে-বুঝে এই প্রোডাকশন এন্ট্রিটি স্থায়ীভাবে মুছে ফেলতে চাই।
+              </span>
+            </label>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
+              <button
+                type="button"
+                disabled={isDeletingEntry}
+                onClick={() => {
+                  setEntryPendingDelete(null);
+                  setDeleteSafetyChecked(false);
+                }}
+                className="min-h-[42px] px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                না, রাখুন (বাতিল)
+              </button>
+              <button
+                type="button"
+                disabled={!deleteSafetyChecked || isDeletingEntry}
+                onClick={handleConfirmSecureDelete}
+                className="min-h-[42px] px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-40 text-white text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>
+                  {isDeletingEntry ? 'মুছে ফেলা হচ্ছে...' : 'স্থায়ীভাবে মুছে ফেলুন'}
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
+      </ModalDrawer>
+
+      {/* Full-Screen Garment Photo Preview Modal */}
+      {previewPhotoModal && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setPreviewPhotoModal(null)}
+        >
+          <div
+            className="relative max-w-lg w-full rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
+                  {previewPhotoModal.title}
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {previewPhotoModal.subtitle}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewPhotoModal(null)}
+                className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-3 bg-slate-950 flex items-center justify-center max-h-[75vh] overflow-auto">
+              <img
+                src={previewPhotoModal.url}
+                alt={previewPhotoModal.title}
+                className="max-h-[70vh] w-auto object-contain rounded-lg"
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal Form for Add / Edit Production Entry */}
       <ModalDrawer
