@@ -1,14 +1,17 @@
 import React, { useState } from 'react';
 import {
-  CloudOff,
+  CheckCircle2,
+  Copy,
   Database,
   FileJson,
   FolderArchive,
   HardDriveDownload,
   ShieldCheck,
+  Terminal,
 } from 'lucide-react';
 import { getSupabaseConnectionState } from '../lib/supabase/client';
 import { SUPABASE_SCHEMA_BLUEPRINTS } from '../services/financialDomainService';
+import { SUPABASE_SETUP_SQL_SCRIPT } from '../services/supabaseDataService';
 import { toBengaliDigits } from '../utils/formatters';
 import { PageHeader } from '../components/ui/PageHeader';
 import { SummaryCard } from '../components/ui/SummaryCard';
@@ -22,6 +25,20 @@ export const DataManagementPage: React.FC<DataManagementPageProps> = ({
 }) => {
   const supabaseState = getSupabaseConnectionState();
   const [noticeBn, setNoticeBn] = useState<string | null>(null);
+  const [copiedSql, setCopiedSql] = useState<boolean>(false);
+
+  const handleCopySqlScript = async () => {
+    try {
+      await navigator.clipboard.writeText(SUPABASE_SETUP_SQL_SCRIPT);
+      setCopiedSql(true);
+      setNoticeBn(
+        'SQL কোড সফলভাবে কপি হয়েছে! এখন আপনার Supabase Dashboard → SQL Editor → New Query-তে পেস্ট করে "Run" বাটনে ক্লিক করুন।'
+      );
+      setTimeout(() => setCopiedSql(false), 4000);
+    } catch {
+      setNoticeBn('নিচের বক্স থেকে সম্পূর্ণ SQL কোডটি সিলেক্ট করে কপি করুন।');
+    }
+  };
 
   const handleExportStructureJson = () => {
     const schemaPayload = {
@@ -50,16 +67,14 @@ export const DataManagementPage: React.FC<DataManagementPageProps> = ({
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
       <PageHeader
         moduleIndexBn="১১. বিশ্লেষণ ও সিস্টেম · ডেটা ম্যানেজমেন্ট"
-        titleBn="ডেটা ম্যানেজমেন্ট ও সুপাবেস ডাটাবেস আর্কিটেকচার"
-        subtitleBn="সুপাবেস (Supabase) ক্লাউড ডাটাবেস, মাইগ্রেশন স্ক্রিপ্ট, অথেনটিকেশন এবং ফটো স্টোরেজ বাকেটের কাঠামো"
-        primaryActionLabelBn="স্কিমা ব্লুপ্রিন্ট ডাউনলোড (JSON)"
-        primaryActionIcon={<HardDriveDownload className="w-4 h-4" />}
-        onPrimaryAction={handleExportStructureJson}
-        secondaryActionLabelBn="সেশন প্রিভিউ ডেটা রিসেট"
-        onSecondaryAction={() => {
-          onResetSessionPreviewData();
-          setNoticeBn('চলমান সেশনের পরীক্ষামূলক ফর্ম এন্ট্রিগুলো পরিষ্কার করা হয়েছে।');
-        }}
+        titleBn="ডেটা ম্যানেজমেন্ট ও সুপাবেস টেবিল সেটআপ (SQL)"
+        subtitleBn="আপনার সুপাবেস প্রজেক্টে public.production_entries টেবিল তৈরির ১-ক্লিক SQL কোড এবং ডাটাবেস কাঠামো"
+        primaryActionLabelBn="SQL কোড কপি করুন"
+        primaryActionIcon={<Copy className="w-4 h-4" />}
+        onPrimaryAction={handleCopySqlScript}
+        secondaryActionLabelBn="স্কিমা ব্লুপ্রিন্ট ডাউনলোড (JSON)"
+        secondaryActionIcon={<HardDriveDownload className="w-4 h-4" />}
+        onSecondaryAction={handleExportStructureJson}
       />
 
       {noticeBn && (
@@ -75,19 +90,69 @@ export const DataManagementPage: React.FC<DataManagementPageProps> = ({
         </div>
       )}
 
-      {/* Honest Cloud Status Notice */}
-      <div className="rounded-2xl border border-amber-200 dark:border-amber-900/70 bg-amber-50/70 dark:bg-amber-950/30 p-4 sm:p-5 flex items-start gap-3.5">
-        <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300 flex items-center justify-center shrink-0">
-          <CloudOff className="w-5 h-5" />
+      {/* Step-by-Step SQL Table Creation Section */}
+      <div className="rounded-2xl border-2 border-teal-600/80 dark:border-teal-500/80 bg-white dark:bg-slate-900 p-4 sm:p-5 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+          <div className="space-y-1">
+            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+              <Terminal className="w-5 h-5 text-teal-700 dark:text-teal-400 shrink-0" />
+              <span>
+                সুপাবেস টেবিল সেটআপ: <code>public.production_entries</code> তৈরি করুন
+              </span>
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400">
+              যদি <em>&ldquo;Could not find the table &apos;public.production_entries&apos; in the schema cache&rdquo;</em> মেসেজ আসে, তার মানে আপনার সুপাবেস প্রজেক্টে এখনও টেবিলটি তৈরি করা হয়নি। নিচের ৩টি ধাপ অনুসরণ করুন:
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleCopySqlScript}
+            className="min-h-[42px] px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-2 shrink-0 cursor-pointer"
+          >
+            {copiedSql ? (
+              <>
+                <CheckCircle2 className="w-4 h-4" />
+                <span>SQL কপি হয়েছে!</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-4 h-4" />
+                <span>১-ক্লিকে SQL কোড কপি করুন</span>
+              </>
+            )}
+          </button>
         </div>
-        <div className="space-y-1">
-          <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-            ক্লাউড সিঙ্ক্রোনাইজেশন স্ট্যাটাস: {supabaseState.statusMessageBn}
-          </h2>
-          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-            এই প্রথম ডেভেলপমেন্ট ধাপে অ্যাপ্লিকেশনের পূর্ণাঙ্গ ইউজার ইন্টারফেস, রেসপনসিভ লেআউট এবং সুপাবেস ইন্টিগ্রেশন আর্কিটেকচার প্রস্তুত করা হয়েছে। স্থায়ী আর্থিক ডাটাবেস হিসেবে ব্রাউজারের localStorage ব্যবহার করা হয়নি এবং সুপাবেস সংযুক্ত না হওয়া পর্যন্ত কোনো ভুয়া ক্লাউড সিঙ্ক দাবি করা হচ্ছে না।
-          </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800">
+            <strong className="text-teal-700 dark:text-teal-400 block mb-1">
+              ধাপ ১: SQL কপি করুন
+            </strong>
+            উপরের <strong>&ldquo;১-ক্লিকে SQL কোড কপি করুন&rdquo;</strong> বাটনে ট্যাপ করে নিচের সম্পূর্ণ SQL কোডটি কপি করুন।
+          </div>
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800">
+            <strong className="text-teal-700 dark:text-teal-400 block mb-1">
+              ধাপ ২: Supabase SQL Editor খুলুন
+            </strong>
+            আপনার Supabase প্রজেক্ট ড্যাশবোর্ডে বাম পাশের মেনু থেকে <strong>SQL Editor</strong> → <strong>New query</strong>-তে যান।
+          </div>
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800">
+            <strong className="text-teal-700 dark:text-teal-400 block mb-1">
+              ধাপ ৩: পেস্ট করে Run চাপুন
+            </strong>
+            কোডটি পেস্ট করে সবুজ <strong>Run</strong> বাটনে ক্লিক করুন। সাথে সাথে টেবিল ও RLS পলিসি তৈরি হয়ে যাবে!
+          </div>
         </div>
+
+        <textarea
+          readOnly
+          rows={12}
+          value={SUPABASE_SETUP_SQL_SCRIPT}
+          onFocus={(e) => e.currentTarget.select()}
+          className="w-full p-3.5 rounded-xl bg-slate-950 text-slate-100 font-mono text-xs leading-relaxed border border-slate-800"
+          aria-label="Supabase SQL Setup Script"
+        />
       </div>
 
       {/* Summary Cards */}
@@ -113,7 +178,7 @@ export const DataManagementPage: React.FC<DataManagementPageProps> = ({
         <SummaryCard
           titleBn="নিরাপত্তা নীতিমালা (RLS)"
           amount={null}
-          customValueBn="প্রস্তুত"
+          customValueBn="সক্রিয়"
           subtitleBn="Google OAuth ও Row Level Security"
           dbColumnHint="auth.uid()"
           icon={<ShieldCheck className="w-5 h-5" />}
@@ -129,10 +194,19 @@ export const DataManagementPage: React.FC<DataManagementPageProps> = ({
               সুপাবেস ডাটাবেস টেবিল ও কলাম আর্কিটেকচার
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              পরবর্তী ধাপে সরাসরি সুপাবেস প্রজেক্টে যুক্ত করার জন্য প্রস্তুতকৃত টেবিল কাঠামো
+              সকল মডিউলের টেবিল ও কলামের কাঠামো
             </p>
           </div>
-          <FileJson className="w-5 h-5 text-teal-700 dark:text-teal-400 shrink-0" />
+          <button
+            type="button"
+            onClick={() => {
+              onResetSessionPreviewData();
+              setNoticeBn('চলমান সেশনের ক্যাশ পরিষ্কার করা হয়েছে।');
+            }}
+            className="text-xs text-rose-600 dark:text-rose-400 font-semibold hover:underline cursor-pointer"
+          >
+            ক্যাশ রিসেট
+          </button>
         </div>
 
         <div className="overflow-x-auto">

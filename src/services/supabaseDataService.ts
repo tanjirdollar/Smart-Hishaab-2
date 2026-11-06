@@ -18,9 +18,61 @@ import {
  *
  * Maps between the application's ProductionEntry model and the `public.production_entries`
  * table in Supabase, preserving historical rates, timestamps, and independent statuses.
- * Includes automatic schema-compatibility fallback if the user's Supabase table
- * only has the initial Phase 1 columns.
+ *
+ * Includes TWO automatic resilience layers:
+ * 1. Legacy-column fallback (`PGRST204`): Works even if only Phase-1 columns exist.
+ * 2. Missing-table cloud fallback (`PGRST205` / `Could not find the table 'public.production_entries'`):
+ *    If the user has not yet run the SQL script in Supabase SQL Editor to create `public.production_entries`,
+ *    automatically persists and loads production entries via Supabase Auth `user_metadata`
+ *    (`supabase.auth.updateUser`) so data is still saved in the user's Supabase cloud account across refreshes
+ *    and automatically migrates into `public.production_entries` as soon as the table is created!
  */
+
+const AUTH_METADATA_ENTRIES_KEY = 'smart_hisab_production_entries_v1';
+
+export const SUPABASE_SETUP_SQL_SCRIPT = `CREATE TABLE IF NOT EXISTS public.production_entries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL DEFAULT auth.uid(),
+  entry_date date NOT NULL DEFAULT CURRENT_DATE,
+  item_name text NOT NULL DEFAULT '',
+  category text NOT NULL DEFAULT '',
+  garment_type text NOT NULL DEFAULT '',
+  size text NOT NULL DEFAULT '',
+  sizes text[] DEFAULT '{}',
+  color text NOT NULL DEFAULT '',
+  colors text[] DEFAULT '{}',
+  pieces integer NOT NULL DEFAULT 0,
+  dozens numeric(12, 4) NOT NULL DEFAULT 0,
+  rate_per_dozen numeric(12, 2) NOT NULL DEFAULT 0,
+  total_wage numeric(14, 2) NOT NULL DEFAULT 0,
+  received_wage numeric(14, 2) NOT NULL DEFAULT 0,
+  pending_wage numeric(14, 2) NOT NULL DEFAULT 0,
+  work_status text NOT NULL DEFAULT 'in_progress',
+  settlement_status text NOT NULL DEFAULT 'pending',
+  start_work_time timestamptz NULL,
+  end_work_time timestamptz NULL,
+  work_duration_minutes integer NULL,
+  short_description text DEFAULT '',
+  photo_urls text[] DEFAULT '{}',
+  import_batch_id text NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.production_entries ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "prod_select_own" ON public.production_entries;
+CREATE POLICY "prod_select_own" ON public.production_entries FOR SELECT TO authenticated USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "prod_insert_own" ON public.production_entries;
+CREATE POLICY "prod_insert_own" ON public.production_entries FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "prod_update_own" ON public.production_entries;
+CREATE POLICY "prod_update_own" ON public.production_entries FOR UPDATE TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "prod_delete_own" ON public.production_entries;
+CREATE POLICY "prod_delete_own" ON public.production_entries FOR DELETE TO authenticated USING (auth.uid() = user_id);
+
+NOTIFY pgrst, 'reload schema';`;
 
 interface SupabaseProductionRow {
   id: string;
@@ -74,7 +126,9 @@ function packDescriptionWithMeta(
 ): string {
   const base = (cleanDescription || '').trim();
   const json = JSON.stringify(meta);
-  return base ? `${base}\n${META_PREFIX}${json}${META_SUFFIX}` : `${META_PREFIX}${json}${META_SUFFIX}`;
+  return base
+    ? `${base}\n${META_PREFIX}${json}${META_SUFFIX}`
+    : `${META_PREFIX}${json}${META_SUFFIX}`;
 }
 
 function unpackDescriptionAndMeta(rawDescription?: string | null): {
@@ -142,10 +196,8 @@ export function mapSupabaseRowToProductionEntry(
       ? Number(meta.pw)
       : Math.max(0, Number((totalWage - receivedWage).toFixed(2)));
 
-  const itemName =
-    row.item_name || meta?.in || row.garment_type || '';
-  const category =
-    row.category || meta?.cat || '';
+  const itemName = row.item_name || meta?.in || row.garment_type || '';
+  const category = row.category || meta?.cat || '';
 
   const sizes =
     Array.isArray(row.sizes) && row.sizes.length > 0
@@ -271,10 +323,6 @@ export function mapProductionEntryToSupabasePayload(
   return payload;
 }
 
-/**
- * Builds a Phase-1 compatible payload if the user's Supabase table has not yet
- * been migrated with the newer Phase-2 columns.
- */
 function mapProductionEntryToLegacySupabasePayload(
   entry: ProductionEntry,
   userId: string
@@ -338,6 +386,49 @@ function isMissingColumnError(errMessage: string, errCode?: string): boolean {
   );
 }
 
+function isMissingTableError(errMessage: string, errCode?: string): boolean {
+  return (
+    errCode === 'PGRST205' ||
+    errCode === '42P01' ||
+    /Could not find the table/i.test(errMessage) ||
+    /relation .*production_entries.* does not exist/i.test(errMessage)
+  );
+}
+
+/**
+ * Reads fallback production entries stored in Supabase Auth `user_metadata`.
+ */
+async function readEntriesFromSupabaseUserMetadata(): Promise<ProductionEntry[]> {
+  if (!supabase) return [];
+  const { data } = await supabase.auth.getUser();
+  const rawList = data.user?.user_metadata?.[AUTH_METADATA_ENTRIES_KEY];
+  if (!Array.isArray(rawList)) return [];
+  return rawList as ProductionEntry[];
+}
+
+/**
+ * Writes fallback production entries into Supabase Auth `user_metadata` so they
+ * persist in the cloud even before `public.production_entries` table is created.
+ */
+async function writeEntriesToSupabaseUserMetadata(
+  entries: ProductionEntry[]
+): Promise<boolean> {
+  if (!supabase) return false;
+  // Strip blob preview URLs before saving in user_metadata
+  const sanitized = entries.slice(0, 150).map((e) => ({
+    ...e,
+    photos: (e.photos || []).filter(
+      (p) => p.storagePath || (p.previewUrl && !p.previewUrl.startsWith('blob:'))
+    ),
+  }));
+  const { error } = await supabase.auth.updateUser({
+    data: {
+      [AUTH_METADATA_ENTRIES_KEY]: sanitized,
+    },
+  });
+  return !error;
+}
+
 /**
  * Fetches all production entries for the authenticated user in chronological order (newest first).
  */
@@ -345,6 +436,7 @@ export async function fetchProductionEntriesFromSupabase(
   explicitUserId?: string
 ): Promise<{
   entries: ProductionEntry[];
+  missingTableSetup?: boolean;
   errorBn: string | null;
 }> {
   if (!supabase) {
@@ -369,27 +461,61 @@ export async function fetchProductionEntriesFromSupabase(
     .order('created_at', { ascending: false });
 
   if (error) {
+    // If `public.production_entries` table hasn't been created in Supabase SQL Editor yet:
+    if (isMissingTableError(error.message, error.code)) {
+      const metadataEntries = await readEntriesFromSupabaseUserMetadata();
+      return {
+        entries: metadataEntries,
+        missingTableSetup: true,
+        errorBn: null,
+      };
+    }
+
     return {
       entries: [],
       errorBn: `সুপাবেস থেকে প্রোডাকশন তথ্য লোড করতে সমস্যা হয়েছে: ${error.message}`,
     };
   }
 
-  const mapped = ((data || []) as SupabaseProductionRow[]).map(
+  let mapped = ((data || []) as SupabaseProductionRow[]).map(
     mapSupabaseRowToProductionEntry
   );
-  return { entries: mapped, errorBn: null };
+
+  // If the table was just created and is empty, check if there are entries in Auth user_metadata to migrate automatically
+  if (mapped.length === 0) {
+    const metadataEntries = await readEntriesFromSupabaseUserMetadata();
+    if (metadataEntries.length > 0) {
+      for (const item of metadataEntries) {
+        await saveProductionEntryToSupabase(item);
+      }
+      const resAfterMigrate = await supabase
+        .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
+        .select('*')
+        .eq('user_id', userId)
+        .order('entry_date', { ascending: false })
+        .order('created_at', { ascending: false });
+      if (!resAfterMigrate.error && resAfterMigrate.data) {
+        mapped = (resAfterMigrate.data as SupabaseProductionRow[]).map(
+          mapSupabaseRowToProductionEntry
+        );
+        await writeEntriesToSupabaseUserMetadata([]);
+      }
+    }
+  }
+
+  return { entries: mapped, missingTableSetup: false, errorBn: null };
 }
 
 /**
  * Saves or updates a single production entry in Supabase.
- * Automatically falls back to legacy column layout if extended columns are missing.
+ * Automatically falls back to legacy column layout or Auth user_metadata if table is not created yet.
  */
 export async function saveProductionEntryToSupabase(
   entry: ProductionEntry
 ): Promise<{
   savedEntry: ProductionEntry;
   persistedToCloud: boolean;
+  missingTableSetup?: boolean;
   errorBn: string | null;
 }> {
   if (!supabase) {
@@ -409,7 +535,7 @@ export async function saveProductionEntryToSupabase(
       savedEntry: entry,
       persistedToCloud: false,
       errorBn:
-        'আপনি বর্তমানে লগইন করা নেই। পেজ রিফ্রেশের পরও ডেটা স্থায়ীভাবে ডাটাবেসে রাখতে উপরে "লগইন" বাটনে ক্লিক করে গুগল বা ইমেইল দিয়ে লগইন করুন।',
+        'আপনি বর্তমানে লগইন করা নেই। পেজ রিফ্রেশের পরও ডেটা স্থায়ীভাবে ক্লাউডে রাখতে উপরে "লগইন" বাটনে ক্লিক করে গুগল বা ইমেইল দিয়ে লগইন করুন।',
     };
   }
 
@@ -442,6 +568,30 @@ export async function saveProductionEntryToSupabase(
     error = retryRes.error;
   }
 
+  // Fallback to Supabase Auth user_metadata if `public.production_entries` table doesn't exist yet
+  if (error && isMissingTableError(error.message, error.code)) {
+    const existingList = await readEntriesFromSupabaseUserMetadata();
+    const stampedEntry: ProductionEntry = {
+      ...entry,
+      userId,
+      createdAt: entry.createdAt || new Date().toISOString(),
+    };
+    const exists = existingList.some((item) => item.id === stampedEntry.id);
+    const updatedList = exists
+      ? existingList.map((item) =>
+          item.id === stampedEntry.id ? stampedEntry : item
+        )
+      : [stampedEntry, ...existingList];
+
+    const ok = await writeEntriesToSupabaseUserMetadata(updatedList);
+    return {
+      savedEntry: stampedEntry,
+      persistedToCloud: ok,
+      missingTableSetup: true,
+      errorBn: null,
+    };
+  }
+
   if (error || !data) {
     return {
       savedEntry: entry,
@@ -455,6 +605,7 @@ export async function saveProductionEntryToSupabase(
   return {
     savedEntry: mapSupabaseRowToProductionEntry(data as SupabaseProductionRow),
     persistedToCloud: true,
+    missingTableSetup: false,
     errorBn: null,
   };
 }
@@ -466,23 +617,31 @@ export async function deleteProductionEntryFromSupabase(
   id: string
 ): Promise<{ errorBn: string | null }> {
   if (!supabase) return { errorBn: null };
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-    return { errorBn: null };
-  }
 
   const { data: sessionData } = await supabase.auth.getSession();
   const userId = sessionData.session?.user?.id;
   if (!userId) return { errorBn: null };
 
-  const { error } = await supabase
-    .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
-    .delete()
-    .eq('id', id)
-    .eq('user_id', userId);
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    const { error } = await supabase
+      .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId);
 
-  if (error) {
-    return { errorBn: `সুপাবেস থেকে মুছে ফেলতে ত্রুটি: ${error.message}` };
+    if (error && !isMissingTableError(error.message, error.code)) {
+      return { errorBn: `সুপাবেস থেকে মুছে ফেলতে ত্রুটি: ${error.message}` };
+    }
   }
+
+  // Also remove from Auth user_metadata fallback if present
+  const existingMeta = await readEntriesFromSupabaseUserMetadata();
+  if (existingMeta.some((e) => e.id === id)) {
+    await writeEntriesToSupabaseUserMetadata(
+      existingMeta.filter((e) => e.id !== id)
+    );
+  }
+
   return { errorBn: null };
 }
 
@@ -535,6 +694,17 @@ export async function batchImportProductionEntriesToSupabase(
     error = retryRes.error;
   }
 
+  if (error && isMissingTableError(error.message, error.code)) {
+    const existingList = await readEntriesFromSupabaseUserMetadata();
+    const combined = [...stamped, ...existingList];
+    const ok = await writeEntriesToSupabaseUserMetadata(combined);
+    return {
+      importedEntries: stamped,
+      persistedToCloud: ok,
+      errorBn: null,
+    };
+  }
+
   if (error) {
     await supabase
       .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
@@ -575,6 +745,14 @@ export async function rollbackImportBatchFromSupabase(
     .delete()
     .eq('import_batch_id', batchId)
     .eq('user_id', userId);
+
+  if (error && isMissingTableError(error.message, error.code)) {
+    const existingList = await readEntriesFromSupabaseUserMetadata();
+    await writeEntriesToSupabaseUserMetadata(
+      existingList.filter((e) => e.importBatchId !== batchId)
+    );
+    return { errorBn: null };
+  }
 
   if (error) {
     return { errorBn: `রোলব্যাক ত্রুটি: ${error.message}` };

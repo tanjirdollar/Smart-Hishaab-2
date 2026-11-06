@@ -124,10 +124,14 @@ export default function App() {
       const userCached = loadCachedRepositoryState(user.id);
       const guestCached = loadCachedRepositoryState(null);
 
-      const { entries: cloudEntries, errorBn } =
+      const { entries: cloudEntries, missingTableSetup, errorBn } =
         await fetchProductionEntriesFromSupabase(user.id);
 
-      if (errorBn) {
+      if (missingTableSetup) {
+        setCloudSyncBannerBn(
+          'আপনার ডেটা বর্তমানে সুপাবেস ক্লাউড প্রোফাইলে সুরক্ষিতভাবে সংরক্ষিত হচ্ছে। পূর্ণাঙ্গ SQL টেবিল চালু করতে "ডেটা ম্যানেজমেন্ট" পাতা থেকে ১-ক্লিকে SQL কোডটি Supabase SQL Editor-এ Run করুন।'
+        );
+      } else if (errorBn) {
         setCloudSyncBannerBn(errorBn);
         if (userCached && userCached.productionEntries.length > 0) {
           setRepo(userCached);
@@ -142,6 +146,7 @@ export default function App() {
       ];
       const unsyncedEntries = localCandidates.filter(
         (item) =>
+          !cloudEntries.some((c) => c.id === item.id) &&
           !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
             item.id
           )
@@ -168,7 +173,10 @@ export default function App() {
 
       setRepo((prev) => ({
         ...(userCached || prev),
-        productionEntries: finalCloudEntries,
+        productionEntries:
+          finalCloudEntries.length > 0
+            ? finalCloudEntries
+            : userCached?.productionEntries || prev.productionEntries,
       }));
     } finally {
       setIsLoadingCloudData(false);
@@ -594,8 +602,22 @@ export default function App() {
         )}
 
         {cloudSyncBannerBn && (
-          <div className="bg-amber-50 dark:bg-amber-950/60 border-b border-amber-200 dark:border-amber-800 px-4 py-2 text-xs text-amber-800 dark:text-amber-200 text-center">
-            {cloudSyncBannerBn}
+          <div className="bg-amber-50 dark:bg-amber-950/60 border-b border-amber-200 dark:border-amber-800 px-4 py-2.5 text-xs text-amber-900 dark:text-amber-200 flex flex-wrap items-center justify-center gap-3">
+            <span>{cloudSyncBannerBn}</span>
+            <button
+              type="button"
+              onClick={() => setActiveModule(ModuleId.DATA_MANAGEMENT)}
+              className="px-2.5 py-1 rounded-lg bg-teal-700 hover:bg-teal-800 text-white font-bold cursor-pointer"
+            >
+              টেবিল সেটআপ SQL দেখুন →
+            </button>
+            <button
+              type="button"
+              onClick={() => setCloudSyncBannerBn(null)}
+              className="underline font-semibold cursor-pointer"
+            >
+              বন্ধ করুন
+            </button>
           </div>
         )}
 
