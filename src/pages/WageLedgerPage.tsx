@@ -1,13 +1,9 @@
 import React, { useState } from 'react';
 import {
-  CheckCircle2,
-  ClipboardCheck,
-  Clock,
   Edit3,
   Plus,
   Search,
   Trash2,
-  Wallet,
 } from 'lucide-react';
 import { WageLedgerRecord } from '../types/models';
 import {
@@ -25,7 +21,6 @@ import {
 } from '../components/ui/FormFields';
 import { ModalDrawer } from '../components/ui/ModalDrawer';
 import { PageHeader } from '../components/ui/PageHeader';
-import { SummaryCard } from '../components/ui/SummaryCard';
 
 export interface WageLedgerPageProps {
   records: WageLedgerRecord[];
@@ -124,52 +119,56 @@ export const WageLedgerPage: React.FC<WageLedgerPageProps> = ({
     return true;
   });
 
+  const totalEarnedAllPeriods = records.reduce(
+    (sum, r) => sum + (r.earnedWage ?? 0),
+    0
+  );
+  const totalPaidAllPeriods = records.reduce(
+    (sum, r) => sum + (r.paidWage ?? 0),
+    0
+  );
+  const netOutstandingAllPeriods = Math.max(
+    0,
+    Number((totalEarnedAllPeriods - totalPaidAllPeriods).toFixed(2))
+  );
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <PageHeader
-        moduleIndexBn="০৩. প্রধান মডিউল · মজুরি ও পাওনা"
         titleBn="মজুরি ও পাওনা খতিয়ান"
-        subtitleBn="গার্মেন্টস কোম্পানি থেকে সাপ্তাহিক ও মাসিক অর্জিত মজুরি, পরিশোধিত টাকা এবং অবশিষ্ট বকেয়া পাওনার হিসাব"
         primaryActionLabelBn="নতুন মজুরি এন্ট্রি"
         primaryActionIcon={<Plus className="w-4 h-4" />}
         onPrimaryAction={openNewModal}
       />
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <SummaryCard
-          titleBn="মোট অর্জিত মজুরি"
-          amount={null}
-          subtitleBn="সকল মেয়াদের মোট অর্জিত মজুরি"
-          dbColumnHint="earned_wage"
-          icon={<ClipboardCheck className="w-5 h-5" />}
-          tone="accent"
-        />
-        <SummaryCard
-          titleBn="মোট প্রাপ্ত মজুরি"
-          amount={null}
-          subtitleBn="গার্মেন্টস কর্তৃক পরিশোধিত টাকা"
-          dbColumnHint="paid_wage"
-          icon={<CheckCircle2 className="w-5 h-5" />}
-          tone="positive"
-        />
-        <SummaryCard
-          titleBn="গার্মেন্টস থেকে মোট পাওনা"
-          amount={null}
-          subtitleBn="বর্তমান বকেয়া অপরিশোধিত মজুরি"
-          dbColumnHint="outstanding_wage"
-          icon={<Clock className="w-5 h-5" />}
-          tone="warning"
-        />
-        <SummaryCard
-          titleBn="মজুরি মেয়াদ সংখ্যা"
-          amount={null}
-          customValueBn={`${toBengaliDigits(records.length)} টি`}
-          subtitleBn="সংরক্ষিত সাপ্তাহিক/মাসিক খতিয়ান"
-          dbColumnHint="wage_periods"
-          icon={<Wallet className="w-5 h-5" />}
-          tone="default"
-        />
+      {/* Single Minimal Unified Summary Card */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl p-4 shadow-2xs">
+        <div className="grid grid-cols-3 gap-3 divide-x divide-slate-200 dark:divide-slate-800">
+          <div className="pr-2">
+            <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              সর্বমোট অর্জিত মজুরি
+            </p>
+            <p className="text-base sm:text-xl font-bold text-slate-900 dark:text-white mt-0.5">
+              {formatTaka(totalEarnedAllPeriods, true)}
+            </p>
+          </div>
+          <div className="px-3">
+            <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              সর্বমোট উত্তোলন
+            </p>
+            <p className="text-base sm:text-xl font-bold text-emerald-700 dark:text-emerald-300 mt-0.5">
+              {formatTaka(totalPaidAllPeriods, true)}
+            </p>
+          </div>
+          <div className="pl-3">
+            <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              কোম্পানি থেকে নিট পাওনা
+            </p>
+            <p className="text-base sm:text-xl font-bold text-amber-700 dark:text-amber-300 mt-0.5">
+              {formatTaka(netOutstandingAllPeriods, true)}
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* Filter Bar */}

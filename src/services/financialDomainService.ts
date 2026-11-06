@@ -109,11 +109,6 @@ export function computeDashboardMetrics(
     0
   );
 
-  const wageTableOutstanding = repo.wageRecords.reduce(
-    (sum, w) => sum + (w.outstandingWage ?? 0),
-    0
-  );
-
   const totalWithdrawals = repo.paymentWithdrawals.reduce(
     (sum, w) => sum + (w.amount ?? 0),
     0
@@ -124,9 +119,10 @@ export function computeDashboardMetrics(
   const effectiveTotalWithdrawn =
     totalWithdrawals > 0 ? totalWithdrawals : allProdExplicitReceived;
 
-  const prodNetOutstanding = Math.max(0, allProdEarned - effectiveTotalWithdrawn);
+  // Strictly compute net company receivable as: Total Production Earned - Total Withdrawn
+  // (Never add wageRecords.outstandingWage on top of productionEntries, as wageRecords are weekly summaries of the same production!)
   const totalOutstandingWages = Number(
-    (prodNetOutstanding + wageTableOutstanding).toFixed(2)
+    Math.max(0, allProdEarned - effectiveTotalWithdrawn).toFixed(2)
   );
 
   const totalPersonalExpenses = Number(

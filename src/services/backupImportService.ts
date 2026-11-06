@@ -197,14 +197,17 @@ export function parseSmartHisabBackupData(raw: RawSmartHisabBackupJson): {
 
     const pieces = Math.round(cleanNumber(row.Pcs ?? row.pieces));
     const dozensInput = cleanNumber(row.Dozen ?? row.dozens);
-    const dozens =
-      pieces > 0 ? calculateDozensFromPieces(pieces) : dozensInput;
-    const ratePerDozen = cleanNumber(row.Rate ?? row.ratePerDozen);
+    const dozens = Number(
+      (pieces > 0 ? calculateDozensFromPieces(pieces) : dozensInput).toFixed(2)
+    );
+    const ratePerDozen = Number(cleanNumber(row.Rate ?? row.ratePerDozen).toFixed(2));
     const earnedInput = cleanNumber(row.Earned ?? row.totalWage);
-    const totalWage =
-      earnedInput > 0
+    const totalWage = Number(
+      (earnedInput > 0
         ? earnedInput
-        : calculateEarnedWageFromPiecesAndRate(pieces, ratePerDozen);
+        : calculateEarnedWageFromPiecesAndRate(pieces, ratePerDozen)
+      ).toFixed(2)
+    );
 
     const isPending =
       row.IsPending === true ||
