@@ -21,6 +21,7 @@ import { ReportsPage } from './pages/ReportsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { WageLedgerPage } from './pages/WageLedgerPage';
 import { WeeklyReportPage } from './pages/WeeklyReportPage';
+import { fetchAndParseAttachedUserBackup } from './services/backupImportService';
 import {
   ApplicationRepositoryState,
   computeCurrentWeekSeries,
@@ -32,7 +33,9 @@ import {
   batchImportProductionEntriesToSupabase,
   deleteProductionEntryFromSupabase,
   fetchProductionEntriesFromSupabase,
+  readAuxiliaryModulesFromSupabaseMetadata,
   rollbackImportBatchFromSupabase,
+  saveAuxiliaryModulesToSupabaseMetadata,
   saveProductionEntryToSupabase,
   uploadProductionPhotoToSupabase,
 } from './services/supabaseDataService';
@@ -48,6 +51,7 @@ import {
 } from './types/models';
 
 const LOCAL_CACHE_KEY_PREFIX = 'smart_hisab_repo_cache_v2_';
+const ATTACHED_BACKUP_IMPORTED_FLAG = 'smart_hisab_backup_20261106_loaded_v1';
 
 function loadCachedRepositoryState(userId: string | null): ApplicationRepositoryState | null {
   try {
@@ -139,14 +143,24 @@ export default function App() {
         return;
       }
 
+      const cloudAux = await readAuxiliaryModulesFromSupabaseMetadata();
+
       // Check if there are any non-UUID entries created before login or during offline that need to be synced to Supabase
       const localCandidates = [
         ...(userCached?.productionEntries || []),
         ...(guestCached?.productionEntries || []),
       ];
+      const existingFingerprints = new Set(
+        cloudEntries.map(
+          (c) => `${c.date}|${c.itemName}|${c.pieces ?? 0}|${c.totalWage}`
+        )
+      );
       const unsyncedEntries = localCandidates.filter(
         (item) =>
           !cloudEntries.some((c) => c.id === item.id) &&
+          !existingFingerprints.has(
+            `${item.date}|${item.itemName}|${item.pieces ?? 0}|${item.totalWage}`
+          ) &&
           !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
             item.id
           )
@@ -155,12 +169,15 @@ export default function App() {
       let finalCloudEntries = cloudEntries;
 
       if (unsyncedEntries.length > 0) {
-        for (const unsynced of unsyncedEntries) {
-          await saveProductionEntryToSupabase(unsynced);
-        }
-        const refreshed = await fetchProductionEntriesFromSupabase(user.id);
-        if (!refreshed.errorBn) {
-          finalCloudEntries = refreshed.entries;
+        const batchRes = await batchImportProductionEntriesToSupabase(
+          unsyncedEntries,
+          `sync-${Date.now()}`
+        );
+        if (!batchRes.errorBn && batchRes.importedEntries.length > 0) {
+          const refreshed = await fetchProductionEntriesFromSupabase(user.id);
+          if (!refreshed.errorBn) {
+            finalCloudEntries = refreshed.entries;
+          }
         }
         // Clear guest unsynced entries after migrating to user's Supabase account
         if (guestCached && guestCached.productionEntries.length > 0) {
@@ -171,18 +188,163 @@ export default function App() {
         }
       }
 
-      setRepo((prev) => ({
-        ...(userCached || prev),
-        productionEntries:
-          finalCloudEntries.length > 0
-            ? finalCloudEntries
-            : userCached?.productionEntries || prev.productionEntries,
-      }));
+      // If both cloud and local have no production entries yet, automatically load attached user backup
+      let autoLoadedBackupState: ApplicationRepositoryState | null = null;
+      if (
+        finalCloudEntries.length === 0 &&
+        (!userCached || userCached.productionEntries.length === 0)
+      ) {
+        const parsedBackup = await fetchAndParseAttachedUserBackup();
+        if (parsedBackup && parsedBackup.state.productionEntries.length > 0) {
+          autoLoadedBackupState = parsedBackup.state;
+          localStorage.setItem(ATTACHED_BACKUP_IMPORTED_FLAG, 'true');
+          const batchRes = await batchImportProductionEntriesToSupabase(
+            parsedBackup.state.productionEntries,
+            'backup-2026-11-06'
+          );
+          if (!batchRes.errorBn && batchRes.importedEntries.length > 0) {
+            finalCloudEntries = batchRes.importedEntries;
+          } else {
+            finalCloudEntries = parsedBackup.state.productionEntries;
+          }
+          await saveAuxiliaryModulesToSupabaseMetadata({
+            wageRecords: parsedBackup.state.wageRecords,
+            paymentWithdrawals: parsedBackup.state.paymentWithdrawals,
+            loanRecords: parsedBackup.state.loanRecords,
+            fundRecords: parsedBackup.state.fundRecords,
+            incomeExpenseRecords: parsedBackup.state.incomeExpenseRecords,
+          });
+        }
+      }
+
+      setRepo((prev) => {
+        const base = autoLoadedBackupState || userCached || prev;
+        const resolvedWithdrawals =
+          (cloudAux?.paymentWithdrawals && cloudAux.paymentWithdrawals.length > 0
+            ? cloudAux.paymentWithdrawals
+            : null) ||
+          (base.paymentWithdrawals && base.paymentWithdrawals.length > 0
+            ? base.paymentWithdrawals
+            : prev.paymentWithdrawals);
+        const resolvedWages =
+          (cloudAux?.wageRecords && cloudAux.wageRecords.length > 0
+            ? cloudAux.wageRecords
+            : null) ||
+          (base.wageRecords && base.wageRecords.length > 0
+            ? base.wageRecords
+            : prev.wageRecords);
+        const resolvedLoans =
+          (cloudAux?.loanRecords && cloudAux.loanRecords.length > 0
+            ? cloudAux.loanRecords
+            : null) ||
+          (base.loanRecords && base.loanRecords.length > 0
+            ? base.loanRecords
+            : prev.loanRecords);
+        const resolvedFunds =
+          (cloudAux?.fundRecords && cloudAux.fundRecords.length > 0
+            ? cloudAux.fundRecords
+            : null) ||
+          (base.fundRecords && base.fundRecords.length > 0
+            ? base.fundRecords
+            : prev.fundRecords);
+        const resolvedIncomeExpense =
+          (cloudAux?.incomeExpenseRecords &&
+          cloudAux.incomeExpenseRecords.length > 0
+            ? cloudAux.incomeExpenseRecords
+            : null) ||
+          (base.incomeExpenseRecords && base.incomeExpenseRecords.length > 0
+            ? base.incomeExpenseRecords
+            : prev.incomeExpenseRecords);
+
+        return {
+          productionEntries:
+            finalCloudEntries.length > 0
+              ? finalCloudEntries
+              : base.productionEntries,
+          paymentWithdrawals: resolvedWithdrawals,
+          wageRecords: resolvedWages,
+          loanRecords: resolvedLoans,
+          fundRecords: resolvedFunds,
+          incomeExpenseRecords: resolvedIncomeExpense,
+        };
+      });
     } finally {
       setIsLoadingCloudData(false);
       isSyncingRef.current = false;
     }
   }, []);
+
+  // Automatically load the user's attached SmartHisab_Backup_2026-11-06.json on first load if not yet loaded
+  useEffect(() => {
+    let cancelled = false;
+    const alreadyLoaded = localStorage.getItem(ATTACHED_BACKUP_IMPORTED_FLAG);
+    if (
+      alreadyLoaded === 'true' &&
+      repo.productionEntries.length > 0 &&
+      repo.paymentWithdrawals.length > 0
+    ) {
+      return;
+    }
+
+    fetchAndParseAttachedUserBackup().then((parsed) => {
+      if (cancelled || !parsed) return;
+      localStorage.setItem(ATTACHED_BACKUP_IMPORTED_FLAG, 'true');
+      setRepo((prev) => {
+        if (
+          prev.productionEntries.length > 0 &&
+          prev.paymentWithdrawals.length > 0 &&
+          alreadyLoaded === 'true'
+        ) {
+          return prev;
+        }
+        const existingProdKeys = new Set(
+          prev.productionEntries.map(
+            (e) => `${e.date}|${e.itemName}|${e.pieces ?? 0}|${e.totalWage}`
+          )
+        );
+        const mergedProd = [
+          ...prev.productionEntries,
+          ...parsed.state.productionEntries.filter(
+            (e) =>
+              !existingProdKeys.has(
+                `${e.date}|${e.itemName}|${e.pieces ?? 0}|${e.totalWage}`
+              )
+          ),
+        ];
+
+        const nextState: ApplicationRepositoryState = {
+          productionEntries:
+            mergedProd.length > 0 ? mergedProd : parsed.state.productionEntries,
+          wageRecords:
+            prev.wageRecords.length > 0
+              ? prev.wageRecords
+              : parsed.state.wageRecords,
+          paymentWithdrawals:
+            prev.paymentWithdrawals.length > 0
+              ? prev.paymentWithdrawals
+              : parsed.state.paymentWithdrawals,
+          loanRecords:
+            prev.loanRecords.length > 0
+              ? prev.loanRecords
+              : parsed.state.loanRecords,
+          fundRecords:
+            prev.fundRecords.length > 0
+              ? prev.fundRecords
+              : parsed.state.fundRecords,
+          incomeExpenseRecords:
+            prev.incomeExpenseRecords.length > 0
+              ? prev.incomeExpenseRecords
+              : parsed.state.incomeExpenseRecords,
+        };
+        saveCachedRepositoryState(currentUser?.id ?? null, nextState);
+        return nextState;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id, repo.paymentWithdrawals.length, repo.productionEntries.length]);
 
   // Wait for Supabase auth session initialization on mount and page refresh
   useEffect(() => {
@@ -202,7 +364,7 @@ export default function App() {
         await loadCloudRecordsForUser(usr);
       } else {
         const guestCache = loadCachedRepositoryState(null);
-        if (guestCache) {
+        if (guestCache && guestCache.productionEntries.length > 0) {
           setRepo(guestCache);
         }
       }
@@ -343,110 +505,270 @@ export default function App() {
     return res;
   };
 
+  // Full Multi-Module Backup Import Handler (JSON or Multi-Tab Excel Workbook)
+  const handleImportFullRepositoryState = async (
+    importedState: ApplicationRepositoryState
+  ): Promise<{ persistedToCloud: boolean; errorBn: string | null }> => {
+    const existingProdKeys = new Set(
+      repo.productionEntries.map(
+        (e) => `${e.date}|${e.itemName}|${e.pieces ?? 0}|${e.totalWage}`
+      )
+    );
+    const newProdToImport = importedState.productionEntries.filter(
+      (e) =>
+        !existingProdKeys.has(
+          `${e.date}|${e.itemName}|${e.pieces ?? 0}|${e.totalWage}`
+        )
+    );
+
+    let persistedToCloud = false;
+    let errorBn: string | null = null;
+    let cloudSavedProd = newProdToImport;
+
+    if (newProdToImport.length > 0) {
+      const batchRes = await batchImportProductionEntriesToSupabase(
+        newProdToImport,
+        `full-backup-${Date.now()}`
+      );
+      persistedToCloud = batchRes.persistedToCloud;
+      errorBn = batchRes.errorBn;
+      if (!batchRes.errorBn && batchRes.importedEntries.length > 0) {
+        cloudSavedProd = batchRes.importedEntries;
+      }
+    }
+
+    const mergeById = <T extends { id: string }>(existing: T[], incoming: T[]): T[] => {
+      const map = new Map<string, T>();
+      for (const item of incoming) map.set(item.id, item);
+      for (const item of existing) map.set(item.id, item);
+      return Array.from(map.values());
+    };
+
+    const nextWageRecords = mergeById(repo.wageRecords, importedState.wageRecords);
+    const nextWithdrawals = mergeById(
+      repo.paymentWithdrawals,
+      importedState.paymentWithdrawals
+    );
+    const nextLoans = mergeById(repo.loanRecords, importedState.loanRecords);
+    const nextFunds = mergeById(repo.fundRecords, importedState.fundRecords);
+    const nextIncomeExpense = mergeById(
+      repo.incomeExpenseRecords,
+      importedState.incomeExpenseRecords
+    );
+
+    const auxSaved = await saveAuxiliaryModulesToSupabaseMetadata({
+      wageRecords: nextWageRecords,
+      paymentWithdrawals: nextWithdrawals,
+      loanRecords: nextLoans,
+      fundRecords: nextFunds,
+      incomeExpenseRecords: nextIncomeExpense,
+    });
+    if (auxSaved) {
+      persistedToCloud = true;
+    }
+
+    localStorage.setItem(ATTACHED_BACKUP_IMPORTED_FLAG, 'true');
+
+    setRepo((prev) => {
+      const nextState: ApplicationRepositoryState = {
+        productionEntries: [...cloudSavedProd, ...prev.productionEntries],
+        wageRecords: nextWageRecords,
+        paymentWithdrawals: nextWithdrawals,
+        loanRecords: nextLoans,
+        fundRecords: nextFunds,
+        incomeExpenseRecords: nextIncomeExpense,
+      };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
+      return nextState;
+    });
+
+    return { persistedToCloud, errorBn };
+  };
+
   // Wage Ledger CRUD handlers
   const handleSaveWageRecord = (record: WageLedgerRecord) => {
     setRepo((prev) => {
       const exists = prev.wageRecords.some((item) => item.id === record.id);
-      return {
-        ...prev,
-        wageRecords: exists
-          ? prev.wageRecords.map((item) => (item.id === record.id ? record : item))
-          : [record, ...prev.wageRecords],
-      };
+      const nextWageRecords = exists
+        ? prev.wageRecords.map((item) => (item.id === record.id ? record : item))
+        : [record, ...prev.wageRecords];
+      const nextState = { ...prev, wageRecords: nextWageRecords };
+      void saveAuxiliaryModulesToSupabaseMetadata({
+        wageRecords: nextState.wageRecords,
+        paymentWithdrawals: nextState.paymentWithdrawals,
+        loanRecords: nextState.loanRecords,
+        fundRecords: nextState.fundRecords,
+        incomeExpenseRecords: nextState.incomeExpenseRecords,
+      });
+      return nextState;
     });
   };
 
   const handleDeleteWageRecord = (id: string) => {
-    setRepo((prev) => ({
-      ...prev,
-      wageRecords: prev.wageRecords.filter((item) => item.id !== id),
-    }));
+    setRepo((prev) => {
+      const nextState = {
+        ...prev,
+        wageRecords: prev.wageRecords.filter((item) => item.id !== id),
+      };
+      void saveAuxiliaryModulesToSupabaseMetadata({
+        wageRecords: nextState.wageRecords,
+        paymentWithdrawals: nextState.paymentWithdrawals,
+        loanRecords: nextState.loanRecords,
+        fundRecords: nextState.fundRecords,
+        incomeExpenseRecords: nextState.incomeExpenseRecords,
+      });
+      return nextState;
+    });
   };
 
   // Payment Withdrawals CRUD handlers
   const handleSaveWithdrawal = (record: PaymentWithdrawalRecord) => {
     setRepo((prev) => {
       const exists = prev.paymentWithdrawals.some((item) => item.id === record.id);
-      return {
-        ...prev,
-        paymentWithdrawals: exists
-          ? prev.paymentWithdrawals.map((item) =>
-              item.id === record.id ? record : item
-            )
-          : [record, ...prev.paymentWithdrawals],
-      };
+      const nextWithdrawals = exists
+        ? prev.paymentWithdrawals.map((item) =>
+            item.id === record.id ? record : item
+          )
+        : [record, ...prev.paymentWithdrawals];
+      const nextState = { ...prev, paymentWithdrawals: nextWithdrawals };
+      void saveAuxiliaryModulesToSupabaseMetadata({
+        wageRecords: nextState.wageRecords,
+        paymentWithdrawals: nextState.paymentWithdrawals,
+        loanRecords: nextState.loanRecords,
+        fundRecords: nextState.fundRecords,
+        incomeExpenseRecords: nextState.incomeExpenseRecords,
+      });
+      return nextState;
     });
   };
 
   const handleDeleteWithdrawal = (id: string) => {
-    setRepo((prev) => ({
-      ...prev,
-      paymentWithdrawals: prev.paymentWithdrawals.filter((item) => item.id !== id),
-    }));
+    setRepo((prev) => {
+      const nextState = {
+        ...prev,
+        paymentWithdrawals: prev.paymentWithdrawals.filter((item) => item.id !== id),
+      };
+      void saveAuxiliaryModulesToSupabaseMetadata({
+        wageRecords: nextState.wageRecords,
+        paymentWithdrawals: nextState.paymentWithdrawals,
+        loanRecords: nextState.loanRecords,
+        fundRecords: nextState.fundRecords,
+        incomeExpenseRecords: nextState.incomeExpenseRecords,
+      });
+      return nextState;
+    });
   };
 
   // Loan CRUD handlers
   const handleSaveLoan = (loan: LoanRecord) => {
     setRepo((prev) => {
       const exists = prev.loanRecords.some((item) => item.id === loan.id);
-      return {
-        ...prev,
-        loanRecords: exists
-          ? prev.loanRecords.map((item) => (item.id === loan.id ? loan : item))
-          : [loan, ...prev.loanRecords],
-      };
+      const nextLoans = exists
+        ? prev.loanRecords.map((item) => (item.id === loan.id ? loan : item))
+        : [loan, ...prev.loanRecords];
+      const nextState = { ...prev, loanRecords: nextLoans };
+      void saveAuxiliaryModulesToSupabaseMetadata({
+        wageRecords: nextState.wageRecords,
+        paymentWithdrawals: nextState.paymentWithdrawals,
+        loanRecords: nextState.loanRecords,
+        fundRecords: nextState.fundRecords,
+        incomeExpenseRecords: nextState.incomeExpenseRecords,
+      });
+      return nextState;
     });
   };
 
   const handleDeleteLoan = (id: string) => {
-    setRepo((prev) => ({
-      ...prev,
-      loanRecords: prev.loanRecords.filter((item) => item.id !== id),
-    }));
+    setRepo((prev) => {
+      const nextState = {
+        ...prev,
+        loanRecords: prev.loanRecords.filter((item) => item.id !== id),
+      };
+      void saveAuxiliaryModulesToSupabaseMetadata({
+        wageRecords: nextState.wageRecords,
+        paymentWithdrawals: nextState.paymentWithdrawals,
+        loanRecords: nextState.loanRecords,
+        fundRecords: nextState.fundRecords,
+        incomeExpenseRecords: nextState.incomeExpenseRecords,
+      });
+      return nextState;
+    });
   };
 
   // Fund CRUD handlers
   const handleSaveFund = (fund: FundRecord) => {
     setRepo((prev) => {
       const exists = prev.fundRecords.some((item) => item.id === fund.id);
-      return {
-        ...prev,
-        fundRecords: exists
-          ? prev.fundRecords.map((item) => (item.id === fund.id ? fund : item))
-          : [fund, ...prev.fundRecords],
-      };
+      const nextFunds = exists
+        ? prev.fundRecords.map((item) => (item.id === fund.id ? fund : item))
+        : [fund, ...prev.fundRecords];
+      const nextState = { ...prev, fundRecords: nextFunds };
+      void saveAuxiliaryModulesToSupabaseMetadata({
+        wageRecords: nextState.wageRecords,
+        paymentWithdrawals: nextState.paymentWithdrawals,
+        loanRecords: nextState.loanRecords,
+        fundRecords: nextState.fundRecords,
+        incomeExpenseRecords: nextState.incomeExpenseRecords,
+      });
+      return nextState;
     });
   };
 
   const handleDeleteFund = (id: string) => {
-    setRepo((prev) => ({
-      ...prev,
-      fundRecords: prev.fundRecords.filter((item) => item.id !== id),
-    }));
+    setRepo((prev) => {
+      const nextState = {
+        ...prev,
+        fundRecords: prev.fundRecords.filter((item) => item.id !== id),
+      };
+      void saveAuxiliaryModulesToSupabaseMetadata({
+        wageRecords: nextState.wageRecords,
+        paymentWithdrawals: nextState.paymentWithdrawals,
+        loanRecords: nextState.loanRecords,
+        fundRecords: nextState.fundRecords,
+        incomeExpenseRecords: nextState.incomeExpenseRecords,
+      });
+      return nextState;
+    });
   };
 
   // Income & Expense CRUD handlers
   const handleSaveTransaction = (tx: IncomeExpenseRecord) => {
     setRepo((prev) => {
       const exists = prev.incomeExpenseRecords.some((item) => item.id === tx.id);
-      return {
-        ...prev,
-        incomeExpenseRecords: exists
-          ? prev.incomeExpenseRecords.map((item) =>
-              item.id === tx.id ? tx : item
-            )
-          : [tx, ...prev.incomeExpenseRecords],
-      };
+      const nextTx = exists
+        ? prev.incomeExpenseRecords.map((item) =>
+            item.id === tx.id ? tx : item
+          )
+        : [tx, ...prev.incomeExpenseRecords];
+      const nextState = { ...prev, incomeExpenseRecords: nextTx };
+      void saveAuxiliaryModulesToSupabaseMetadata({
+        wageRecords: nextState.wageRecords,
+        paymentWithdrawals: nextState.paymentWithdrawals,
+        loanRecords: nextState.loanRecords,
+        fundRecords: nextState.fundRecords,
+        incomeExpenseRecords: nextState.incomeExpenseRecords,
+      });
+      return nextState;
     });
   };
 
   const handleDeleteTransaction = (id: string) => {
-    setRepo((prev) => ({
-      ...prev,
-      incomeExpenseRecords: prev.incomeExpenseRecords.filter(
-        (item) => item.id !== id
-      ),
-    }));
+    setRepo((prev) => {
+      const nextState = {
+        ...prev,
+        incomeExpenseRecords: prev.incomeExpenseRecords.filter(
+          (item) => item.id !== id
+        ),
+      };
+      void saveAuxiliaryModulesToSupabaseMetadata({
+        wageRecords: nextState.wageRecords,
+        paymentWithdrawals: nextState.paymentWithdrawals,
+        loanRecords: nextState.loanRecords,
+        fundRecords: nextState.fundRecords,
+        incomeExpenseRecords: nextState.incomeExpenseRecords,
+      });
+      return nextState;
+    });
   };
 
   const dashboardMetrics = useMemo(() => computeDashboardMetrics(repo), [repo]);
@@ -500,6 +822,7 @@ export default function App() {
             existingEntries={repo.productionEntries}
             onBatchImportEntries={handleBatchImportEntries}
             onRollbackImportBatch={handleRollbackImportBatch}
+            onImportFullRepositoryState={handleImportFullRepositoryState}
             onNavigate={setActiveModule}
           />
         );

@@ -3,13 +3,25 @@ import * as XLSX from 'xlsx';
 import {
   AlertTriangle,
   CheckCircle2,
+  Database,
   Download,
+  Eye,
   FileSpreadsheet,
+  Layers,
   Link2,
   RotateCcw,
   ShieldCheck,
+  Sparkles,
   UploadCloud,
 } from 'lucide-react';
+import {
+  convertExcelWorkbookToBackupJson,
+  fetchAndParseAttachedUserBackup,
+  FullBackupImportSummary,
+  parseSmartHisabBackupData,
+  RawSmartHisabBackupJson,
+} from '../services/backupImportService';
+import { ApplicationRepositoryState } from '../services/financialDomainService';
 import {
   ImportFieldKey,
   ModuleId,
@@ -43,7 +55,16 @@ export interface ImportDataPageProps {
     errorBn: string | null;
   }>;
   onRollbackImportBatch: (batchId: string) => Promise<{ errorBn: string | null }>;
+  onImportFullRepositoryState?: (
+    state: ApplicationRepositoryState
+  ) => Promise<{ persistedToCloud: boolean; errorBn: string | null }>;
   onNavigate: (module: ModuleId) => void;
+}
+
+interface ParsedWorksheetTab {
+  sheetName: string;
+  headers: string[];
+  rows: Record<string, string>[];
 }
 
 interface FieldMappingMeta {
@@ -65,6 +86,8 @@ const IMPORT_FIELD_DEFINITIONS: FieldMappingMeta[] = [
     labelBn: '২. আইটেমের নাম (Item Name)',
     required: true,
     aliases: [
+      'work name',
+      'work_name',
       'item name',
       'item',
       'item_name',
@@ -73,6 +96,7 @@ const IMPORT_FIELD_DEFINITIONS: FieldMappingMeta[] = [
       'style',
       'আইটেম',
       'আইটেমের নাম',
+      'কাজের নাম',
       'পোশাকের ধরন',
       'পোশাক',
     ],
@@ -111,6 +135,7 @@ const IMPORT_FIELD_DEFINITIONS: FieldMappingMeta[] = [
     key: 'totalWage',
     labelBn: '৯. অর্জিত মজুরি (Earned Wage)',
     aliases: [
+      'earned',
       'earned wage',
       'total wage',
       'total_wage',
@@ -169,6 +194,7 @@ export const ImportDataPage: React.FC<ImportDataPageProps> = ({
   existingEntries,
   onBatchImportEntries,
   onRollbackImportBatch,
+  onImportFullRepositoryState,
   onNavigate,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -178,6 +204,19 @@ export const ImportDataPage: React.FC<ImportDataPageProps> = ({
   const [googleSheetUrl, setGoogleSheetUrl] = useState<string>('');
   const [isLoadingSheet, setIsLoadingSheet] = useState<boolean>(false);
   const [parseErrorBn, setParseErrorBn] = useState<string | null>(null);
+
+  const [availableSheets, setAvailableSheets] = useState<ParsedWorksheetTab[]>([]);
+  const [activeSheetName, setActiveSheetName] = useState<string>('');
+  const [showAllPreviewRows, setShowAllPreviewRows] = useState<boolean>(false);
+  const [detectedFullBackup, setDetectedFullBackup] = useState<{
+    state: ApplicationRepositoryState;
+    summary: FullBackupImportSummary;
+  } | null>(null);
+  const [isImportingFullBackup, setIsImportingFullBackup] = useState<boolean>(false);
+  const [fullBackupSuccessBanner, setFullBackupSuccessBanner] = useState<{
+    summary: FullBackupImportSummary;
+    persistedToCloud: boolean;
+  } | null>(null);
 
   const [sheetHeaders, setSheetHeaders] = useState<string[]>([]);
   const [rawRows, setRawRows] = useState<Record<string, string>[]>([]);
@@ -262,59 +301,35 @@ export const ImportDataPage: React.FC<ImportDataPageProps> = ({
     setColumnMapping(nextMap);
   };
 
-  const processWorkbook = (workbook: XLSX.WorkBook, sourceLabel: string) => {
-    setParseErrorBn(null);
-    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
-      setParseErrorBn('ফাইলে কোনো বৈধ ওয়ার্কশিট পাওয়া যায়নি।');
-      return;
-    }
+  const extractSingleSheetTab = (
+    ws: XLSX.WorkSheet,
+    sheetName: string
+  ): ParsedWorksheetTab | null => {
+    const rawMatrix = XLSX.utils.sheet_to_json<unknown[]>(ws, {
+      header: 1,
+      raw: false,
+      defval: '',
+    });
+    const cleanedRows = (rawMatrix || [])
+      .map((row) =>
+        Array.isArray(row) ? row.map((c) => String(c ?? '').trim()) : []
+      )
+      .filter((row) => row.some((cell) => cell !== ''));
 
-    // Find the first worksheet that has non-empty cells across all sheet tabs
-    let chosenNonEmptyRows: string[][] = [];
-    let chosenSheetName = workbook.SheetNames[0];
+    if (cleanedRows.length === 0) return null;
 
-    for (const sheetName of workbook.SheetNames) {
-      const ws = workbook.Sheets[sheetName];
-      if (!ws) continue;
-      const rawMatrix = XLSX.utils.sheet_to_json<unknown[]>(ws, {
-        header: 1,
-        raw: false,
-        defval: '',
-      });
-      const cleanedRows = (rawMatrix || [])
-        .map((row) =>
-          Array.isArray(row) ? row.map((c) => String(c ?? '').trim()) : []
-        )
-        .filter((row) => row.some((cell) => cell !== ''));
-
-      if (cleanedRows.length > chosenNonEmptyRows.length) {
-        chosenNonEmptyRows = cleanedRows;
-        chosenSheetName = sheetName;
-      }
-      if (cleanedRows.length >= 2) {
-        break;
-      }
-    }
-
-    if (chosenNonEmptyRows.length === 0) {
-      setParseErrorBn('স্প্রেডশিট ফাইলটি সম্পূর্ণ খালি। অনুগ্রহ করে ডেটাযুক্ত ফাইল নির্বাচন করুন।');
-      return;
-    }
-
-    // Skip single-cell title banner rows at the top if followed by a multi-column table
     let headerRowIndex = 0;
     while (
-      headerRowIndex < chosenNonEmptyRows.length - 1 &&
-      chosenNonEmptyRows[headerRowIndex].filter((c) => c !== '').length <= 1 &&
-      chosenNonEmptyRows[headerRowIndex + 1].filter((c) => c !== '').length >= 2
+      headerRowIndex < cleanedRows.length - 1 &&
+      cleanedRows[headerRowIndex].filter((c) => c !== '').length <= 1 &&
+      cleanedRows[headerRowIndex + 1].filter((c) => c !== '').length >= 2
     ) {
       headerRowIndex++;
     }
 
-    const candidateHeaderRow = chosenNonEmptyRows[headerRowIndex];
-    const remainingRows = chosenNonEmptyRows.slice(headerRowIndex + 1);
+    const candidateHeaderRow = cleanedRows[headerRowIndex];
+    const remainingRows = cleanedRows.slice(headerRowIndex + 1);
 
-    // Check if the first row is actually a data row (e.g., contains a valid date or only 1 row exists in the sheet)
     const firstRowHasDate = candidateHeaderRow.some(
       (cell) => normalizeToDDMMYYYY(cell) !== null
     );
@@ -323,12 +338,9 @@ export const ImportDataPage: React.FC<ImportDataPageProps> = ({
     let rawDataMatrix: string[][] = [];
 
     if (remainingRows.length === 0 || firstRowHasDate) {
-      const maxCols = Math.max(
-        ...chosenNonEmptyRows.map((r) => r.length),
-        1
-      );
+      const maxCols = Math.max(...cleanedRows.map((r) => r.length), 1);
       headers = Array.from({ length: maxCols }, (_, i) => `কলাম_${i + 1}`);
-      rawDataMatrix = chosenNonEmptyRows.slice(headerRowIndex);
+      rawDataMatrix = cleanedRows.slice(headerRowIndex);
     } else {
       const maxCols = Math.max(
         candidateHeaderRow.length,
@@ -358,23 +370,137 @@ export const ImportDataPage: React.FC<ImportDataPageProps> = ({
       dataRows.push(rowObj);
     }
 
-    if (dataRows.length === 0) {
-      setParseErrorBn('স্প্রেডশিটে কোনো ডেটা সারি পাওয়া যায়নি।');
+    if (dataRows.length === 0) return null;
+    return { sheetName, headers, rows: dataRows };
+  };
+
+  const selectSheetTab = (tab: ParsedWorksheetTab, baseFileName?: string) => {
+    setActiveSheetName(tab.sheetName);
+    setSheetHeaders(tab.headers);
+    setRawRows(tab.rows);
+    setShowAllPreviewRows(false);
+    if (baseFileName) {
+      setUploadedFileName(
+        availableSheets.length > 1
+          ? `${baseFileName} (${tab.sheetName})`
+          : baseFileName
+      );
+    }
+    autoMapHeaders(tab.headers, tab.rows[0]);
+  };
+
+  const processWorkbook = (workbook: XLSX.WorkBook, sourceLabel: string) => {
+    setParseErrorBn(null);
+    setDetectedFullBackup(null);
+    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+      setParseErrorBn('ফাইলে কোনো বৈধ ওয়ার্কশিট পাওয়া যায়নি।');
       return;
     }
 
+    // Extract ALL non-empty worksheets so the user can view/switch between every tab
+    const parsedTabs: ParsedWorksheetTab[] = [];
+    for (const sheetName of workbook.SheetNames) {
+      const ws = workbook.Sheets[sheetName];
+      if (!ws) continue;
+      const tab = extractSingleSheetTab(ws, sheetName);
+      if (tab) {
+        parsedTabs.push(tab);
+      }
+    }
+
+    if (parsedTabs.length === 0) {
+      setParseErrorBn(
+        'স্প্রেডশিট ফাইলটি সম্পূর্ণ খালি। অনুগ্রহ করে ডেটাযুক্ত ফাইল নির্বাচন করুন।'
+      );
+      return;
+    }
+
+    setAvailableSheets(parsedTabs);
+
+    // Check if this workbook is a multi-sheet SmartHisab workbook (Production, Expense, Loan, Fund, Fund_Transaction)
+    const rawBackupFromWorkbook = convertExcelWorkbookToBackupJson(workbook);
+    const parsedMultiModule = parseSmartHisabBackupData(rawBackupFromWorkbook);
+    if (
+      parsedMultiModule.summary.productionCount > 0 ||
+      parsedMultiModule.summary.withdrawalCount > 0 ||
+      parsedMultiModule.summary.expenseCount > 0 ||
+      parsedMultiModule.summary.loanCount > 0 ||
+      parsedMultiModule.summary.fundCount > 0
+    ) {
+      setDetectedFullBackup(parsedMultiModule);
+    }
+
+    // Prioritize the Production / প্রোডাকশন sheet tab by default if present!
+    const preferredTab =
+      parsedTabs.find((t) => {
+        const lower = t.sheetName.trim().toLowerCase();
+        return (
+          lower.includes('production') ||
+          lower.includes('প্রোডাকশন') ||
+          lower.includes('work') ||
+          lower.includes('কাজ')
+        );
+      }) || parsedTabs[0];
+
     setUploadedFileName(
-      workbook.SheetNames.length > 1
-        ? `${sourceLabel} (${chosenSheetName})`
+      parsedTabs.length > 1
+        ? `${sourceLabel} (${preferredTab.sheetName})`
         : sourceLabel
     );
-    setSheetHeaders(headers);
-    setRawRows(dataRows);
-    autoMapHeaders(headers, dataRows[0]);
+    selectSheetTab(preferredTab);
     setStep(2);
   };
 
-  // Step 1A: Handle CSV or XLSX File Upload
+  const handleExecuteFullBackupImport = async (backupData: {
+    state: ApplicationRepositoryState;
+    summary: FullBackupImportSummary;
+  }) => {
+    setIsImportingFullBackup(true);
+    setParseErrorBn(null);
+    try {
+      if (onImportFullRepositoryState) {
+        const res = await onImportFullRepositoryState(backupData.state);
+        setFullBackupSuccessBanner({
+          summary: backupData.summary,
+          persistedToCloud: res.persistedToCloud,
+        });
+      } else {
+        const res = await onBatchImportEntries(
+          backupData.state.productionEntries,
+          `backup-${Date.now()}`
+        );
+        setFullBackupSuccessBanner({
+          summary: backupData.summary,
+          persistedToCloud: res.persistedToCloud,
+        });
+      }
+    } catch (err) {
+      setParseErrorBn(
+        `সম্পূর্ণ ব্যাকআপ ইমপোর্ট করতে ত্রুটি: ${
+          err instanceof Error ? err.message : 'অজানা ত্রুটি'
+        }`
+      );
+    } finally {
+      setIsImportingFullBackup(false);
+    }
+  };
+
+  const handleImportAttachedBackupClick = async () => {
+    setIsImportingFullBackup(true);
+    setParseErrorBn(null);
+    try {
+      const parsed = await fetchAndParseAttachedUserBackup();
+      if (!parsed) {
+        setParseErrorBn('সংযুক্ত ব্যাকআপ ফাইলটি লোড করা যায়নি।');
+        return;
+      }
+      await handleExecuteFullBackupImport(parsed);
+    } finally {
+      setIsImportingFullBackup(false);
+    }
+  };
+
+  // Step 1A: Handle JSON, CSV or XLSX File Upload
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -382,7 +508,15 @@ export const ImportDataPage: React.FC<ImportDataPageProps> = ({
 
     try {
       const lowerName = file.name.toLowerCase();
-      if (lowerName.endsWith('.csv') || file.type === 'text/csv') {
+      if (lowerName.endsWith('.json') || file.type === 'application/json') {
+        const rawText = await file.text();
+        const rawJson = JSON.parse(
+          rawText.replace(/^\uFEFF/, '')
+        ) as RawSmartHisabBackupJson;
+        const parsedBackup = parseSmartHisabBackupData(rawJson);
+        setDetectedFullBackup(parsedBackup);
+        await handleExecuteFullBackupImport(parsedBackup);
+      } else if (lowerName.endsWith('.csv') || file.type === 'text/csv') {
         const rawText = await file.text();
         const cleanText = rawText.replace(/^\uFEFF/, '');
         const workbook = XLSX.read(cleanText, {
@@ -849,162 +983,400 @@ export const ImportDataPage: React.FC<ImportDataPageProps> = ({
         </div>
       )}
 
-      {/* STEP 1: Upload File (CSV / XLSX) or Google Sheets Link */}
-      {step === 1 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
-            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-              ধাপ ১ (ক): CSV বা Excel (.xlsx) ফাইল আপলোড করুন
-            </h2>
-            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400">
-              Google Sheets থেকে <strong>File → Download → Comma Separated Values (.csv)</strong> অথবা{' '}
-              <strong>Microsoft Excel (.xlsx)</strong> ডাউনলোড করে এখানে নির্বাচন করুন।
-            </p>
-
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  fileInputRef.current?.click();
-                }
-              }}
-              className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-teal-600 dark:hover:border-teal-500 rounded-2xl p-6 text-center bg-slate-50/70 dark:bg-slate-950/50 transition-colors cursor-pointer"
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".csv,.xlsx,.xls"
-                onChange={handleFileSelect}
-                className="hidden"
-              />
-              <div className="w-12 h-12 rounded-2xl bg-teal-50 dark:bg-teal-950/70 text-teal-700 dark:text-teal-300 flex items-center justify-center mx-auto mb-3">
-                <UploadCloud className="w-6 h-6" />
+      {/* Full Multi-Module Backup Import Success Banner */}
+      {fullBackupSuccessBanner && (
+        <div className="rounded-2xl border-2 border-emerald-500 dark:border-emerald-600 bg-emerald-50/90 dark:bg-emerald-950/50 p-4 sm:p-5 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                <CheckCircle2 className="w-5 h-5" />
               </div>
-              <p className="text-sm font-bold text-slate-900 dark:text-slate-100">
-                CSV অথবা Excel (.xlsx / .xls) ফাইল নির্বাচন করতে ট্যাপ করুন
+              <div>
+                <h3 className="text-sm sm:text-base font-bold text-emerald-950 dark:text-emerald-100">
+                  আপনার সম্পূর্ণ হিসাব সফলভাবে ইমপোর্ট ও সিঙ্ক হয়েছে!
+                </h3>
+                <p className="text-xs text-emerald-800 dark:text-emerald-200 mt-0.5">
+                  {fullBackupSuccessBanner.persistedToCloud
+                    ? 'সুপাবেস ক্লাউড ডাটাবেসে স্থায়ীভাবে সংরক্ষিত হয়েছে (পেজ রিফ্রেশ করলেও মুছবে না)'
+                    : 'অ্যাপ্লিকেশনে সংরক্ষিত হয়েছে (ক্লাউডে রাখতে উপরে লগইন করুন)'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-xs">
+            <div className="rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800/80 p-3">
+              <p className="text-slate-500 dark:text-slate-400">প্রোডাকশন এন্ট্রি</p>
+              <p className="text-base font-bold text-slate-900 dark:text-slate-100 mt-0.5">
+                {toBengaliDigits(fullBackupSuccessBanner.summary.productionCount)} টি কাজ
               </p>
-              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                আপনার বর্তমান কোনো প্রোডাকশন ডেটা মুছে যাবে না
+            </div>
+            <div className="rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800/80 p-3">
+              <p className="text-slate-500 dark:text-slate-400">কোম্পানি থেকে উত্তোলন</p>
+              <p className="text-base font-bold text-slate-900 dark:text-slate-100 mt-0.5">
+                {toBengaliDigits(fullBackupSuccessBanner.summary.withdrawalCount)} টি উত্তোলন
+              </p>
+            </div>
+            <div className="rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800/80 p-3">
+              <p className="text-slate-500 dark:text-slate-400">আয় ও পরিবার খরচ</p>
+              <p className="text-base font-bold text-slate-900 dark:text-slate-100 mt-0.5">
+                {toBengaliDigits(
+                  fullBackupSuccessBanner.summary.expenseCount +
+                    fullBackupSuccessBanner.summary.incomeCount
+                )}{' '}
+                টি লেনদেন
+              </p>
+            </div>
+            <div className="rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800/80 p-3">
+              <p className="text-slate-500 dark:text-slate-400">বিকাশ ও ঋণ খাতা</p>
+              <p className="text-base font-bold text-slate-900 dark:text-slate-100 mt-0.5">
+                {toBengaliDigits(fullBackupSuccessBanner.summary.loanCount)} টি ঋণ হিসাব
+              </p>
+            </div>
+            <div className="rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800/80 p-3">
+              <p className="text-slate-500 dark:text-slate-400">ফান্ড ও চিকিৎসা তহবিল</p>
+              <p className="text-base font-bold text-slate-900 dark:text-slate-100 mt-0.5">
+                {toBengaliDigits(fullBackupSuccessBanner.summary.fundCount)} টি ফান্ড ({toBengaliDigits(fullBackupSuccessBanner.summary.fundTxCount)} লেনদেন)
               </p>
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4 flex flex-col justify-between">
-            <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => onNavigate(ModuleId.DASHBOARD)}
+              className="px-3.5 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold cursor-pointer"
+            >
+              ড্যাশবোর্ডে দেখুন →
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate(ModuleId.PRODUCTION)}
+              className="px-3.5 py-2 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-bold cursor-pointer"
+            >
+              প্রোডাকশন খাতা (৬১টি) →
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate(ModuleId.WEEKLY_REPORT)}
+              className="px-3.5 py-2 rounded-xl border border-teal-700 text-teal-800 dark:text-teal-200 text-xs font-bold cursor-pointer"
+            >
+              সাপ্তাহিক রিপোর্ট (শনি–বৃহস্পতি) →
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate(ModuleId.PAYMENTS)}
+              className="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-bold cursor-pointer"
+            >
+              কোম্পানি উত্তোলন (১৮টি) →
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate(ModuleId.LOANS)}
+              className="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-bold cursor-pointer"
+            >
+              বিকাশ লোন →
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate(ModuleId.FUNDS)}
+              className="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-bold cursor-pointer"
+            >
+              চিকিৎসা ফান্ড →
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate(ModuleId.INCOME_EXPENSE)}
+              className="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-bold cursor-pointer"
+            >
+              পরিবার ও অন্যান্য খরচ (২০টি) →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* STEP 1: Upload File (JSON / CSV / XLSX) or Google Sheets Link */}
+      {step === 1 && (
+        <div className="space-y-6">
+          {/* 1-Click Attached SmartHisab_Backup_2026-11-06.json Import Card */}
+          <div className="rounded-2xl border-2 border-teal-600/80 dark:border-teal-500/80 bg-gradient-to-br from-teal-50/90 via-white to-emerald-50/60 dark:from-teal-950/60 dark:via-slate-900 dark:to-emerald-950/30 p-5 space-y-4">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div className="space-y-1.5">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-teal-700 text-white text-[11px] font-bold">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>১-ক্লিকে সম্পূর্ণ ব্যাকআপ ও সকল ট্যাব ইমপোর্ট</span>
+                </div>
+                <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-slate-100">
+                  আপনার সংযুক্ত ব্যাকআপ হিসাব (SmartHisab_Backup_2026-11-06.json / Ay bay.xlsx) ইমপোর্ট করুন
+                </h2>
+                <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300">
+                  আপনার পাঠানো ব্যাকআপ ফাইলের <strong>প্রোডাকশন (৬১টি কাজ)</strong>, <strong>কোম্পানি থেকে বিল উত্তোলন (১৮টি = ৳৭১,৫০০)</strong>, <strong>পরিবার ও অন্যান্য খরচ (২০টি)</strong>, <strong>বিকাশ লোন (৮টি কিস্তি পরিশোধসহ)</strong> এবং <strong>চিকিৎসা ফান্ড (২টি ফান্ড, ১৪টি লেনদেন)</strong> এক ক্লিকেই সকল মডিউলে ও সুপাবেস ক্লাউডে সংরক্ষণ করুন।
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleImportAttachedBackupClick}
+                disabled={isImportingFullBackup}
+                className="min-h-[48px] px-5 py-3 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-2 cursor-pointer shrink-0 shadow-sm"
+              >
+                <Database className="w-4 h-4" />
+                <span>
+                  {isImportingFullBackup
+                    ? 'সকল হিসাব ইমপোর্ট ও সিঙ্ক হচ্ছে...'
+                    : 'সংযুক্ত ব্যাকআপের সকল হিসাব ১-ক্লিকে ইমপোর্ট করুন'}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
               <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                ধাপ ১ (খ): সরাসরি Google Sheets লিংক থেকে ইমপোর্ট (ঐচ্ছিক)
+                ধাপ ১ (ক): Excel (.xlsx), JSON ব্যাকআপ বা CSV ফাইল আপলোড করুন
               </h2>
               <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400">
-                আপনার Google Sheet-টি যদি <em>&ldquo;Anyone with the link can view&rdquo;</em> করা থাকে, তবে তার লিংক নিচে পেস্ট করে সরাসরি লোড করতে পারেন:
+                আপনার <strong>Ay bay.xlsx</strong> (মাল্টি-ট্যাব এক্সেল), <strong>SmartHisab_Backup.json</strong> অথবা <strong>CSV</strong> ফাইল এখানে আপলোড করুন। এক্সেল ফাইলে একাধিক ট্যাব (Production, Expense, Loan, Fund, Fund_Transaction) থাকলে সব ট্যাবই দেখতে ও ইমপোর্ট করতে পারবেন।
               </p>
 
-              <div className="space-y-2">
-                <label
-                  htmlFor="google-sheet-url-input"
-                  className="block text-xs font-medium text-slate-700 dark:text-slate-300"
-                >
-                  Google Sheets URL
-                </label>
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <input
-                    id="google-sheet-url-input"
-                    type="url"
-                    value={googleSheetUrl}
-                    onChange={(e) => setGoogleSheetUrl(e.target.value)}
-                    placeholder="https://docs.google.com/spreadsheets/d/..."
-                    className="flex-1 min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleFetchGoogleSheetsUrl}
-                    disabled={isLoadingSheet}
-                    className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs sm:text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer shrink-0"
-                  >
-                    <Link2 className="w-4 h-4" />
-                    <span>{isLoadingSheet ? 'লোড হচ্ছে...' : 'শিট লোড করুন'}</span>
-                  </button>
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    fileInputRef.current?.click();
+                  }
+                }}
+                className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-teal-600 dark:hover:border-teal-500 rounded-2xl p-6 text-center bg-slate-50/70 dark:bg-slate-950/50 transition-colors cursor-pointer"
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".json,.csv,.xlsx,.xls"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                <div className="w-12 h-12 rounded-2xl bg-teal-50 dark:bg-teal-950/70 text-teal-700 dark:text-teal-300 flex items-center justify-center mx-auto mb-3">
+                  <UploadCloud className="w-6 h-6" />
                 </div>
+                <p className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                  Excel (.xlsx / .xls), JSON ব্যাকআপ অথবা CSV ফাইল নির্বাচন করতে ট্যাপ করুন
+                </p>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  মাল্টি-ট্যাব স্প্রেডশিট (প্রোডাকশন, খরচ, লোন, ফান্ড) ও JSON ব্যাকআপ সম্পূর্ণ সমর্থিত
+                </p>
               </div>
             </div>
 
-            <div className="rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 p-3.5 text-xs text-slate-600 dark:text-slate-400 space-y-1">
-              <p className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-                <ShieldCheck className="w-4 h-4 text-teal-600 shrink-0" />
-                <span>ইমপোর্ট নিরাপত্তা নিশ্চয়তা:</span>
-              </p>
-              <p>
-                • পূর্বে সংরক্ষিত কোনো প্রোডাকশন তথ্য মুছে ফেলা হবে না। • ঐতিহাসিক প্রোডাকশন তারিখ অক্ষুণ্ণ থাকবে এবং স্বয়ংক্রিয়ভাবে শনিবার–বৃহস্পতিবার সাপ্তাহিক রিপোর্টে যুক্ত হবে।
-              </p>
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4 flex flex-col justify-between">
+              <div className="space-y-3">
+                <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+                  ধাপ ১ (খ): সরাসরি Google Sheets লিংক থেকে ইমপোর্ট (ঐচ্ছিক)
+                </h2>
+                <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400">
+                  আপনার Google Sheet-টি যদি <em>&ldquo;Anyone with the link can view&rdquo;</em> করা থাকে, তবে তার লিংক নিচে পেস্ট করে সরাসরি লোড করতে পারেন:
+                </p>
+
+                <div className="space-y-2">
+                  <label
+                    htmlFor="google-sheet-url-input"
+                    className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+                  >
+                    Google Sheets URL
+                  </label>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      id="google-sheet-url-input"
+                      type="url"
+                      value={googleSheetUrl}
+                      onChange={(e) => setGoogleSheetUrl(e.target.value)}
+                      placeholder="https://docs.google.com/spreadsheets/d/..."
+                      className="flex-1 min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleFetchGoogleSheetsUrl}
+                      disabled={isLoadingSheet}
+                      className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs sm:text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer shrink-0"
+                    >
+                      <Link2 className="w-4 h-4" />
+                      <span>{isLoadingSheet ? 'লোড হচ্ছে...' : 'শিট লোড করুন'}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 p-3.5 text-xs text-slate-600 dark:text-slate-400 space-y-1">
+                <p className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-teal-600 shrink-0" />
+                  <span>ইমপোর্ট নিরাপত্তা নিশ্চয়তা:</span>
+                </p>
+                <p>
+                  • পূর্বে সংরক্ষিত কোনো প্রোডাকশন তথ্য মুছে ফেলা হবে না। • ঐতিহাসিক প্রোডাকশন তারিখ অক্ষুণ্ণ থাকবে এবং স্বয়ংক্রিয়ভাবে শনিবার–বৃহস্পতিবার সাপ্তাহিক রিপোর্টে যুক্ত হবে।
+                </p>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* STEP 2: Preview Spreadsheet Contents */}
+      {/* STEP 2: Preview Spreadsheet Contents + Multi-Tab Switcher */}
       {step === 2 && (
-        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
-            <div>
-              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-                ধাপ ২: স্প্রেডশিট ডেটা প্রিভিউ ({uploadedFileName})
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                মোট সনাক্তকৃত সারি: {toBengaliDigits(rawRows.length)} টি · কলাম:{' '}
-                {toBengaliDigits(sheetHeaders.length)} টি (প্রথম ৫টি নমুনা সারি নিচে দেখানো হলো)
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2">
+        <div className="space-y-4">
+          {/* If Multi-Tab SmartHisab Workbook Detected, offer 1-Click Import of ALL Tabs */}
+          {detectedFullBackup && (
+            <div className="rounded-2xl border-2 border-teal-600 dark:border-teal-500 bg-teal-50/90 dark:bg-teal-950/50 p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div className="space-y-1">
+                <p className="text-xs font-bold text-teal-800 dark:text-teal-200 flex items-center gap-1.5">
+                  <Layers className="w-4 h-4" />
+                  <span>মাল্টি-ট্যাব স্প্রেডশিট সনাক্ত হয়েছে ({toBengaliDigits(availableSheets.length)} টি ট্যাব)</span>
+                </p>
+                <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-slate-100">
+                  এই ফাইলের সকল ট্যাবের হিসাব একসাথে ইমপোর্ট করতে চান?
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-300">
+                  সনাক্তকৃত হিসাব: প্রোডাকশন কাজ: <strong>{toBengaliDigits(detectedFullBackup.summary.productionCount)}টি</strong> · কোম্পানি থেকে উত্তোলন: <strong>{toBengaliDigits(detectedFullBackup.summary.withdrawalCount)}টি</strong> · খরচ: <strong>{toBengaliDigits(detectedFullBackup.summary.expenseCount)}টি</strong> · ঋণ হিসাব: <strong>{toBengaliDigits(detectedFullBackup.summary.loanCount)}টি</strong> · ফান্ড: <strong>{toBengaliDigits(detectedFullBackup.summary.fundCount)}টি ({toBengaliDigits(detectedFullBackup.summary.fundTxCount)}টি লেনদেন)</strong>
+                </p>
+              </div>
               <button
                 type="button"
-                onClick={() => setStep(1)}
-                className="min-h-[42px] px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold cursor-pointer"
+                onClick={() => handleExecuteFullBackupImport(detectedFullBackup)}
+                disabled={isImportingFullBackup}
+                className="min-h-[44px] px-4 py-2.5 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-2 cursor-pointer shrink-0"
               >
-                অন্য ফাইল নিন
-              </button>
-              <button
-                type="button"
-                onClick={() => setStep(3)}
-                className="min-h-[42px] px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs sm:text-sm font-semibold cursor-pointer"
-              >
-                পরবর্তী ধাপ: কলাম ম্যাপিং →
+                <Database className="w-4 h-4" />
+                <span>
+                  {isImportingFullBackup
+                    ? 'সব ট্যাব ইমপোর্ট হচ্ছে...'
+                    : 'সব ট্যাবের সম্পূর্ণ হিসাব একসাথে ইমপোর্ট করুন'}
+                </span>
               </button>
             </div>
-          </div>
+          )}
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 font-semibold text-slate-700 dark:text-slate-300">
-                  <th className="py-2.5 px-3 whitespace-nowrap">#</th>
-                  {sheetHeaders.map((h) => (
-                    <th key={h} className="py-2.5 px-3 whitespace-nowrap">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {rawRows.slice(0, 5).map((r, rIdx) => (
-                  <tr key={rIdx}>
-                    <td className="py-2.5 px-3 font-mono text-slate-500">
-                      {toBengaliDigits(rIdx + 1)}
-                    </td>
-                    {sheetHeaders.map((h) => (
-                      <td
-                        key={h}
-                        className="py-2.5 px-3 text-slate-800 dark:text-slate-200 whitespace-nowrap max-w-[180px] truncate"
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 space-y-4">
+            {/* Sheet Tab Selector Bar when Excel file has multiple tabs */}
+            {availableSheets.length > 1 && (
+              <div className="space-y-2 pb-3 border-b border-slate-200 dark:border-slate-800">
+                <p className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                  <Layers className="w-4 h-4 text-teal-600" />
+                  <span>
+                    স্প্রেডশিটের সকল ট্যাব ({toBengaliDigits(availableSheets.length)} টি) — যেকোনো ট্যাবে ট্যাপ করে সেই ট্যাবের সম্পূর্ণ হিসাব দেখুন:
+                  </span>
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  {availableSheets.map((tab) => {
+                    const isSelected = tab.sheetName === activeSheetName;
+                    return (
+                      <button
+                        key={tab.sheetName}
+                        type="button"
+                        onClick={() => selectSheetTab(tab)}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-colors cursor-pointer flex items-center gap-2 ${
+                          isSelected
+                            ? 'bg-teal-700 text-white border-teal-700 shadow-xs'
+                            : 'bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:border-teal-500'
+                        }`}
                       >
-                        {r[h] || '—'}
-                      </td>
+                        <span>{tab.sheetName}</span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded-md text-[10px] ${
+                            isSelected
+                              ? 'bg-teal-800 text-teal-100'
+                              : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                          }`}
+                        >
+                          {toBengaliDigits(tab.rows.length)} সারি
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div>
+                <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+                  ধাপ ২: স্প্রেডশিট ডেটা প্রিভিউ ({activeSheetName || uploadedFileName})
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  নির্বাচিত ট্যাব: <strong>{activeSheetName || 'ডিফল্ট'}</strong> · মোট সনাক্তকৃত সারি:{' '}
+                  {toBengaliDigits(rawRows.length)} টি · কলাম:{' '}
+                  {toBengaliDigits(sheetHeaders.length)} টি{' '}
+                  {showAllPreviewRows
+                    ? '(সকল সারি নিচে দেখানো হচ্ছে)'
+                    : `(প্রথম ${toBengaliDigits(Math.min(10, rawRows.length))}টি সারি দেখানো হলো)`}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {rawRows.length > 10 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllPreviewRows((prev) => !prev)}
+                    className="min-h-[42px] px-3.5 py-2 rounded-xl border border-teal-600/70 text-teal-700 dark:text-teal-300 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>
+                      {showAllPreviewRows
+                        ? 'সংক্ষিপ্ত প্রিভিউ (১০ সারি)'
+                        : `সব সারি দেখুন (${toBengaliDigits(rawRows.length)} টি)`}
+                    </span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setStep(1)}
+                  className="min-h-[42px] px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold cursor-pointer"
+                >
+                  অন্য ফাইল নিন
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStep(3)}
+                  className="min-h-[42px] px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs sm:text-sm font-semibold cursor-pointer"
+                >
+                  পরবর্তী ধাপ: কলাম ম্যাপিং →
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto max-h-[480px] overflow-y-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead className="sticky top-0 z-10">
+                  <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-semibold text-slate-700 dark:text-slate-300">
+                    <th className="py-2.5 px-3 whitespace-nowrap">#</th>
+                    {sheetHeaders.map((h) => (
+                      <th key={h} className="py-2.5 px-3 whitespace-nowrap">
+                        {h}
+                      </th>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {(showAllPreviewRows ? rawRows : rawRows.slice(0, 10)).map(
+                    (r, rIdx) => (
+                      <tr key={rIdx}>
+                        <td className="py-2.5 px-3 font-mono text-slate-500">
+                          {toBengaliDigits(rIdx + 1)}
+                        </td>
+                        {sheetHeaders.map((h) => (
+                          <td
+                            key={h}
+                            className="py-2.5 px-3 text-slate-800 dark:text-slate-200 whitespace-nowrap max-w-[220px] truncate"
+                          >
+                            {r[h] || '—'}
+                          </td>
+                        ))}
+                      </tr>
+                    )
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}

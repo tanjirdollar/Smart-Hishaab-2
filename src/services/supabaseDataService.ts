@@ -1,8 +1,13 @@
 import { supabase, SUPABASE_STORAGE_BUCKETS, SUPABASE_TABLES } from '../lib/supabase/client';
 import {
+  FundRecord,
+  IncomeExpenseRecord,
+  LoanRecord,
+  PaymentWithdrawalRecord,
   ProductionEntry,
   SettlementStatus,
   UploadedPhotoPreview,
+  WageLedgerRecord,
   WorkStatus,
 } from '../types/models';
 import {
@@ -29,6 +34,7 @@ import {
  */
 
 const AUTH_METADATA_ENTRIES_KEY = 'smart_hisab_production_entries_v1';
+const AUTH_METADATA_AUXILIARY_KEY = 'smart_hisab_auxiliary_modules_v1';
 
 export const SUPABASE_SETUP_SQL_SCRIPT = `CREATE TABLE IF NOT EXISTS public.production_entries (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -57,6 +63,9 @@ export const SUPABASE_SETUP_SQL_SCRIPT = `CREATE TABLE IF NOT EXISTS public.prod
   import_batch_id text NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON TABLE public.production_entries TO anon, authenticated, service_role;
 
 ALTER TABLE public.production_entries ENABLE ROW LEVEL SECURITY;
 
@@ -390,9 +399,48 @@ function isMissingTableError(errMessage: string, errCode?: string): boolean {
   return (
     errCode === 'PGRST205' ||
     errCode === '42P01' ||
+    errCode === '42501' ||
     /Could not find the table/i.test(errMessage) ||
-    /relation .*production_entries.* does not exist/i.test(errMessage)
+    /relation .*production_entries.* does not exist/i.test(errMessage) ||
+    /permission denied for table/i.test(errMessage)
   );
+}
+
+export interface AuxiliaryModulesCloudPayload {
+  wageRecords?: WageLedgerRecord[];
+  paymentWithdrawals?: PaymentWithdrawalRecord[];
+  loanRecords?: LoanRecord[];
+  fundRecords?: FundRecord[];
+  incomeExpenseRecords?: IncomeExpenseRecord[];
+}
+
+/**
+ * Reads auxiliary modules (Withdrawals, Wages, Loans, Funds, Income/Expense) stored in Supabase Auth `user_metadata`.
+ */
+export async function readAuxiliaryModulesFromSupabaseMetadata(): Promise<AuxiliaryModulesCloudPayload | null> {
+  if (!supabase) return null;
+  const { data } = await supabase.auth.getUser();
+  const raw = data.user?.user_metadata?.[AUTH_METADATA_AUXILIARY_KEY];
+  if (!raw || typeof raw !== 'object') return null;
+  return raw as AuxiliaryModulesCloudPayload;
+}
+
+/**
+ * Persists auxiliary modules (Withdrawals, Wages, Loans, Funds, Income/Expense) into Supabase Auth `user_metadata`.
+ */
+export async function saveAuxiliaryModulesToSupabaseMetadata(
+  payload: AuxiliaryModulesCloudPayload
+): Promise<boolean> {
+  if (!supabase) return false;
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData.session?.user) return false;
+
+  const { error } = await supabase.auth.updateUser({
+    data: {
+      [AUTH_METADATA_AUXILIARY_KEY]: payload,
+    },
+  });
+  return !error;
 }
 
 /**
@@ -414,11 +462,15 @@ async function writeEntriesToSupabaseUserMetadata(
   entries: ProductionEntry[]
 ): Promise<boolean> {
   if (!supabase) return false;
-  // Strip blob preview URLs before saving in user_metadata
+  // Strip blob and large base64 data URLs before saving in user_metadata to stay well within JWT metadata limits
   const sanitized = entries.slice(0, 150).map((e) => ({
     ...e,
     photos: (e.photos || []).filter(
-      (p) => p.storagePath || (p.previewUrl && !p.previewUrl.startsWith('blob:'))
+      (p) =>
+        (p.storagePath && !p.storagePath.startsWith('data:')) ||
+        (p.previewUrl &&
+          !p.previewUrl.startsWith('blob:') &&
+          !p.previewUrl.startsWith('data:'))
     ),
   }));
   const { error } = await supabase.auth.updateUser({
