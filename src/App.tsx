@@ -39,6 +39,7 @@ import {
   saveProductionEntryToSupabase,
   uploadProductionPhotoToSupabase,
 } from './services/supabaseDataService';
+import { DataExportModal } from './components/ui/DataExportModal';
 import {
   FundRecord,
   IncomeExpenseRecord,
@@ -52,6 +53,7 @@ import {
 
 const LOCAL_CACHE_KEY_PREFIX = 'smart_hisab_repo_cache_v2_';
 const ATTACHED_BACKUP_IMPORTED_FLAG = 'smart_hisab_backup_20261106_loaded_v1';
+const THEME_STORAGE_KEY = 'smart_hisab_theme';
 
 function loadCachedRepositoryState(userId: string | null): ApplicationRepositoryState | null {
   try {
@@ -89,7 +91,18 @@ function saveCachedRepositoryState(
 export default function App() {
   const [activeModule, setActiveModule] = useState<ModuleId>(ModuleId.DASHBOARD);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
-  const [theme, setTheme] = useState<ThemeMode>('light');
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem(THEME_STORAGE_KEY);
+        if (saved === 'dark' || saved === 'light') return saved;
+      } catch {
+        // fallback
+      }
+    }
+    return 'light';
+  });
+  const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
   const [showLoginView, setShowLoginView] = useState<boolean>(false);
   const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(null);
   const [isAuthInitialized, setIsAuthInitialized] = useState<boolean>(!supabase);
@@ -108,6 +121,11 @@ export default function App() {
       root.classList.add('dark');
     } else {
       root.classList.remove('dark');
+    }
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // ignore
     }
   }, [theme]);
 
@@ -830,8 +848,11 @@ export default function App() {
         return (
           <ProductionLedgerPage
             entries={repo.productionEntries}
+            withdrawals={repo.paymentWithdrawals}
             onSaveEntry={handleSaveProduction}
             onDeleteEntry={handleDeleteProduction}
+            onSaveWithdrawal={handleSaveWithdrawal}
+            onDeleteWithdrawal={handleDeleteWithdrawal}
           />
         );
       case ModuleId.WEEKLY_REPORT:
@@ -940,6 +961,7 @@ export default function App() {
           theme={theme}
           onToggleTheme={handleToggleTheme}
           onOpenLoginView={() => setShowLoginView(true)}
+          onOpenExportModal={() => setIsExportModalOpen(true)}
           currentUser={currentUser}
         />
 
@@ -979,6 +1001,13 @@ export default function App() {
         activeModule={activeModule}
         onSelectModule={setActiveModule}
         onOpenLoginView={() => setShowLoginView(true)}
+      />
+
+      {/* Backup and Data Export Modal */}
+      <DataExportModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        repo={repo}
       />
     </div>
   );

@@ -29,7 +29,7 @@ export const PaymentsPage: React.FC<PaymentsPageProps> = ({
   const [voucherNo, setVoucherNo] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('নগদ (Cash)');
   const [weekReference, setWeekReference] = useState('');
-  const [amount, setAmount] = useState('');
+  const [amount, setAmount] = useState('4000');
   const [approvedBy, setApprovedBy] = useState('');
   const [remarks, setRemarks] = useState('');
 
@@ -53,7 +53,7 @@ export const PaymentsPage: React.FC<PaymentsPageProps> = ({
     setVoucherNo(`VCH-${Date.now().toString().slice(-4)}`);
     setPaymentMethod('নগদ (Cash)');
     setWeekReference('');
-    setAmount('');
+    setAmount('4000');
     setApprovedBy('');
     setRemarks('');
     setIsModalOpen(true);

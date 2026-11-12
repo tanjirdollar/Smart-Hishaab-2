@@ -88,7 +88,16 @@ export async function signInWithGoogleSupabase(): Promise<{
   }
 
   if (data?.url) {
-    window.location.href = data.url;
+    const isInsideIframe = typeof window !== 'undefined' && window.self !== window.top;
+    if (isInsideIframe) {
+      window.open(data.url, '_blank');
+      return {
+        ok: true,
+        messageBn: 'Google লগইন পাতা নতুন উইন্ডো/ট্যাবে খোলা হয়েছে। লগইন সম্পন্ন করে এখানে ফিরে আসুন।',
+      };
+    } else {
+      window.location.href = data.url;
+    }
   }
 
   return {

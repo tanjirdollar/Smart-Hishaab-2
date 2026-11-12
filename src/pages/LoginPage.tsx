@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
+  ExternalLink,
   LogOut,
   Scissors,
   ShieldCheck,
@@ -144,11 +145,30 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               </div>
 
               <div className="space-y-3">
+                {typeof window !== 'undefined' && window.self !== window.top && (
+                  <div className="rounded-2xl border border-sky-200 dark:border-sky-900/60 bg-sky-50/80 dark:bg-sky-950/40 p-3.5 text-xs text-sky-900 dark:text-sky-200 space-y-2">
+                    <p className="font-semibold flex items-center gap-1.5">
+                      <span>💡 গুগল নিরাপত্তা নির্দেশিকা:</span>
+                    </p>
+                    <p className="leading-relaxed">
+                      AI Studio-র প্রিভিউ ফ্রেমের (iframe) নিরাপত্তা পলিসির কারণে গুগল লগইন পেজ ফ্রেমের ভেতর সরাসরি লোড হওয়া ব্রাউজার দ্বারা ব্লক হতে পারে। গুগল একাউন্ট সংযোগ করতে সরাসরি নিচের বাটনে ট্যাপ করুন অথবা নতুন ট্যাবে অ্যাপটি খুলুন।
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => window.open(window.location.href, '_blank')}
+                      className="w-full min-h-[38px] px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>নতুন ব্রাউজার ট্যাবে অ্যাপটি খুলুন</span>
+                    </button>
+                  </div>
+                )}
+
                 <button
                   type="button"
                   onClick={handleGoogleLoginClick}
                   disabled={isCheckingAuth}
-                  className="w-full min-h-[48px] px-5 py-3 rounded-2xl border border-slate-300 dark:border-slate-700 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm sm:text-base font-semibold flex items-center justify-center gap-3 transition-colors cursor-pointer"
+                  className="w-full min-h-[48px] px-5 py-3 rounded-2xl border border-slate-300 dark:border-slate-700 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm sm:text-base font-semibold flex items-center justify-center gap-3 transition-colors cursor-pointer shadow-2xs"
                 >
                   <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
                     <path

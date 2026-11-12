@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowDownRight,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -28,6 +29,7 @@ import {
 } from '../config/navigation';
 import { ExtractedVoiceProductionData } from '../services/voiceEntryService';
 import {
+  PaymentWithdrawalRecord,
   ProductionEntry,
   ProductionFilterState,
   SettlementStatus,
@@ -64,11 +66,14 @@ import { ModalDrawer } from '../components/ui/ModalDrawer';
 
 export interface ProductionLedgerPageProps {
   entries: ProductionEntry[];
+  withdrawals?: PaymentWithdrawalRecord[];
   onSaveEntry: (
     entry: ProductionEntry,
     rawFiles?: File[]
   ) => Promise<{ persistedToCloud: boolean; errorBn: string | null }>;
   onDeleteEntry: (id: string) => Promise<void> | void;
+  onSaveWithdrawal?: (withdrawal: PaymentWithdrawalRecord) => void;
+  onDeleteWithdrawal?: (id: string) => void;
 }
 
 interface ProductionFormDraft {
@@ -182,9 +187,23 @@ function getEntryVisualCardStyle(entry: ProductionEntry): {
 
 export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
   entries,
+  withdrawals = [],
   onSaveEntry,
   onDeleteEntry,
+  onSaveWithdrawal,
+  onDeleteWithdrawal,
 }) => {
+  const [ledgerTab, setLedgerTab] = useState<'all' | 'production' | 'withdrawals'>('all');
+  const [isWithdrawalModalOpen, setIsWithdrawalModalOpen] = useState(false);
+  const [withdrawalDraft, setWithdrawalDraft] = useState({
+    id: '',
+    date: getTodayDDMMYYYY(),
+    amount: '4000',
+    paymentMethod: 'নগদ (Cash)',
+    voucherNo: '',
+    remarks: 'মজুরি উত্তোলন',
+  });
+
   const [filters, setFilters] = useState<ProductionFilterState>({
     searchQuery: '',
     dateFrom: '',
@@ -811,6 +830,82 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       });
   }, [entries, filters]);
 
+  const sortedFilteredWithdrawals = useMemo(() => {
+    const fromDt = parseAnyDateToDateObj(filters.dateFrom);
+    const toDt = parseAnyDateToDateObj(filters.dateTo);
+    const fromTime = fromDt
+      ? new Date(
+          fromDt.getFullYear(),
+          fromDt.getMonth(),
+          fromDt.getDate(),
+          0,
+          0,
+          0
+        ).getTime()
+      : null;
+    const toTime = toDt
+      ? new Date(
+          toDt.getFullYear(),
+          toDt.getMonth(),
+          toDt.getDate(),
+          23,
+          59,
+          59
+        ).getTime()
+      : null;
+
+    return (withdrawals || [])
+      .filter((w) => {
+        const dt = parseAnyDateToDateObj(w.date);
+        const time = dt ? dt.getTime() : 0;
+        if (fromTime !== null && time < fromTime) return false;
+        if (toTime !== null && time > toTime) return false;
+        if (filters.searchQuery.trim()) {
+          const q = filters.searchQuery.toLowerCase();
+          const haystack = `${w.voucherNo} ${w.paymentMethod} ${w.remarks} ${w.date}`.toLowerCase();
+          if (!haystack.includes(q)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const dtA = parseAnyDateToDateObj(a.date)?.getTime() ?? 0;
+        const dtB = parseAnyDateToDateObj(b.date)?.getTime() ?? 0;
+        return dtB - dtA;
+      });
+  }, [withdrawals, filters.dateFrom, filters.dateTo, filters.searchQuery]);
+
+  type UnifiedLedgerFeedItem =
+    | { kind: 'production'; entry: ProductionEntry; timestamp: number }
+    | { kind: 'withdrawal'; record: PaymentWithdrawalRecord; timestamp: number };
+
+  const unifiedLedgerFeed = useMemo((): UnifiedLedgerFeedItem[] => {
+    if (ledgerTab === 'production') {
+      return sortedFilteredEntries.map((entry) => ({
+        kind: 'production',
+        entry,
+        timestamp: parseAnyDateToDateObj(entry.date)?.getTime() ?? 0,
+      }));
+    }
+    if (ledgerTab === 'withdrawals') {
+      return sortedFilteredWithdrawals.map((record) => ({
+        kind: 'withdrawal',
+        record,
+        timestamp: parseAnyDateToDateObj(record.date)?.getTime() ?? 0,
+      }));
+    }
+    const prods: UnifiedLedgerFeedItem[] = sortedFilteredEntries.map((entry) => ({
+      kind: 'production',
+      entry,
+      timestamp: parseAnyDateToDateObj(entry.date)?.getTime() ?? 0,
+    }));
+    const withds: UnifiedLedgerFeedItem[] = sortedFilteredWithdrawals.map((record) => ({
+      kind: 'withdrawal',
+      record,
+      timestamp: parseAnyDateToDateObj(record.date)?.getTime() ?? 0,
+    }));
+    return [...prods, ...withds].sort((a, b) => b.timestamp - a.timestamp);
+  }, [ledgerTab, sortedFilteredEntries, sortedFilteredWithdrawals]);
+
   // Daily and Date-Range Production Summaries
   const filteredSummary = useMemo(() => {
     const todayStr = getTodayDDMMYYYY(false);
@@ -1318,7 +1413,27 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {onSaveWithdrawal && (
+            <button
+              type="button"
+              onClick={() => {
+                setWithdrawalDraft({
+                  id: '',
+                  date: getTodayDDMMYYYY(),
+                  amount: '4000',
+                  paymentMethod: 'নগদ (Cash)',
+                  voucherNo: `VCH-${Date.now().toString().slice(-4)}`,
+                  remarks: 'মজুরি উত্তোলন',
+                });
+                setIsWithdrawalModalOpen(true);
+              }}
+              className="flex-1 sm:flex-initial min-h-[40px] px-3 py-1.5 rounded-xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-200 text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
+            >
+              <ArrowDownRight className="w-3.5 h-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+              <span>+ বিল উত্তোলন (৪,০০০)</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={handleOpenVoiceEntry}
@@ -1336,6 +1451,43 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
             <span>নতুন প্রোডাকশন</span>
           </button>
         </div>
+      </div>
+
+      {/* Ledger View Tabs: All, Production Only, Bill Withdrawal Only */}
+      <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-xl text-xs font-semibold overflow-x-auto">
+        <button
+          type="button"
+          onClick={() => setLedgerTab('all')}
+          className={`flex-1 py-1.5 px-3 rounded-lg text-center transition-colors cursor-pointer whitespace-nowrap ${
+            ledgerTab === 'all'
+              ? 'bg-white dark:bg-slate-900 text-teal-800 dark:text-teal-300 shadow-2xs font-bold'
+              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+          }`}
+        >
+          সকল হিসাব ({toBengaliDigits(sortedFilteredEntries.length + sortedFilteredWithdrawals.length)})
+        </button>
+        <button
+          type="button"
+          onClick={() => setLedgerTab('production')}
+          className={`flex-1 py-1.5 px-3 rounded-lg text-center transition-colors cursor-pointer whitespace-nowrap ${
+            ledgerTab === 'production'
+              ? 'bg-white dark:bg-slate-900 text-teal-800 dark:text-teal-300 shadow-2xs font-bold'
+              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+          }`}
+        >
+          শুধু প্রোডাকশন ({toBengaliDigits(sortedFilteredEntries.length)})
+        </button>
+        <button
+          type="button"
+          onClick={() => setLedgerTab('withdrawals')}
+          className={`flex-1 py-1.5 px-3 rounded-lg text-center transition-colors cursor-pointer whitespace-nowrap ${
+            ledgerTab === 'withdrawals'
+              ? 'bg-white dark:bg-slate-900 text-teal-800 dark:text-teal-300 shadow-2xs font-bold'
+              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+          }`}
+        >
+          শুধু বিল উত্তোলন ({toBengaliDigits(sortedFilteredWithdrawals.length)})
+        </button>
       </div>
 
       {statusBannerBn && (
@@ -1584,10 +1736,10 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
           প্রোডাকশন ইতিহাস
         </h2>
 
-        {sortedFilteredEntries.length === 0 ? (
+        {unifiedLedgerFeed.length === 0 ? (
           <EmptyDataState
-            titleBn="কোনো প্রোডাকশন ইতিহাস পাওয়া যায়নি"
-            descriptionBn="নতুন প্রোডাকশন বাটনে ক্লিক করে, ভয়েস এন্ট্রি ব্যবহার করে অথবা ইমপোর্ট মডিউল থেকে আপনার ফাইল ইমপোর্ট করুন।"
+            titleBn="কোনো হিসাব পাওয়া যায়নি"
+            descriptionBn="নতুন প্রোডাকশন বা বিল উত্তোলন যোগ করুন, অথবা ফিল্টার রিসেট করুন।"
             tableNameHint="production_entries"
             actionLabelBn="নতুন প্রোডাকশন যোগ করুন"
             onActionClick={handleOpenAddModal}
@@ -1596,8 +1748,65 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         ) : (
           <>
             {/* Mobile & Tablet Responsive Cards View (< lg) */}
-            <div className="lg:hidden p-3 sm:p-4 space-y-3">
-              {sortedFilteredEntries.map((entry) => {
+            <div className="lg:hidden p-2.5 sm:p-4 space-y-2.5">
+              {unifiedLedgerFeed.map((item) => {
+                if (item.kind === 'withdrawal') {
+                  const w = item.record;
+                  return (
+                    <div
+                      key={w.id}
+                      className="rounded-xl border border-emerald-200 dark:border-emerald-800/80 bg-emerald-50/50 dark:bg-emerald-950/25 p-3 space-y-2 transition-colors shadow-2xs"
+                    >
+                      <div className="flex items-start justify-between gap-2.5">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          <div className="w-10 h-10 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                            <ArrowDownRight className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200">
+                                বিল উত্তোলন
+                              </span>
+                              <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                                {formatDateDDMMYYYY(w.date, true)}
+                              </span>
+                            </div>
+                            <p className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate mt-0.5">
+                              {w.voucherNo ? `ভাউচার: ${w.voucherNo}` : 'কোম্পানি থেকে মজুরি উত্তোলন'}
+                            </p>
+                            <p className="text-[11px] text-slate-600 dark:text-slate-400 truncate">
+                              মাধ্যম: {w.paymentMethod || 'নগদ'} {w.remarks ? `· ${w.remarks}` : ''}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="text-right shrink-0">
+                          <p className="text-base sm:text-lg font-bold font-mono text-emerald-700 dark:text-emerald-400 tabular-nums">
+                            -{formatTaka(w.amount ?? 0, true)}
+                          </p>
+                          <span className="text-[10px] text-emerald-700 dark:text-emerald-400 font-semibold">
+                            উত্তোলন সম্পন্ন
+                          </span>
+                        </div>
+                      </div>
+
+                      {onDeleteWithdrawal && (
+                        <div className="flex justify-end pt-1 border-t border-emerald-100 dark:border-emerald-900/50">
+                          <button
+                            type="button"
+                            onClick={() => onDeleteWithdrawal(w.id)}
+                            className="text-[11px] font-medium text-rose-600 dark:text-rose-400 hover:underline cursor-pointer inline-flex items-center gap-1"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>মুছুন</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                const entry = item.entry;
                 const visual = getEntryVisualCardStyle(entry);
                 const validPhotos = (entry.photos || []).filter(
                   (p) => p.previewUrl || p.storagePath
@@ -1605,15 +1814,21 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                 const primaryPhotoUrl =
                   validPhotos[0]?.previewUrl || validPhotos[0]?.storagePath || null;
 
+                const durMinutes =
+                  entry.workDurationMinutes && entry.workDurationMinutes > 0
+                    ? entry.workDurationMinutes
+                    : calculateDurationMinutes(entry.startWorkTime, entry.endWorkTime);
+                const durationBn = formatDurationBn(durMinutes);
+
                 return (
                   <div
                     key={entry.id}
-                    className={`rounded-2xl border p-3.5 sm:p-4 space-y-3 transition-colors ${visual.cardBorderBg}`}
+                    className={`rounded-xl border p-3 space-y-2.5 transition-colors shadow-2xs ${visual.cardBorderBg}`}
                   >
-                    {/* Top Row: Photo Thumbnail (if uploaded) + Item Details + Total Earned Wage */}
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-start gap-3 min-w-0 flex-1">
-                        {primaryPhotoUrl && (
+                    {/* Row 1: Left thumbnail + Item Details + Right: Total Earned Wage & Rate */}
+                    <div className="flex items-start justify-between gap-2.5">
+                      <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                        {primaryPhotoUrl ? (
                           <button
                             type="button"
                             onClick={() =>
@@ -1623,12 +1838,10 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                                 subtitle: `তারিখ: ${formatDateDDMMYYYY(
                                   entry.date,
                                   true
-                                )} · ${toBengaliDigits(entry.pieces ?? 0)} পিস (${formatDozensBn(
-                                  entry.dozens
-                                )} ডজন)`,
+                                )} · ${toBengaliDigits(entry.pieces ?? 0)} পিস`,
                               })
                             }
-                            className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden border-2 border-white dark:border-slate-700 shadow-xs shrink-0 group cursor-pointer bg-slate-100 dark:bg-slate-800"
+                            className="relative w-14 h-14 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 shadow-2xs shrink-0 cursor-pointer bg-slate-100 dark:bg-slate-800"
                             title="ছবি বড় করে দেখতে ট্যাপ করুন"
                           >
                             <img
@@ -1637,43 +1850,75 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                               className="w-full h-full object-cover"
                               loading="lazy"
                             />
-                            <span className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded-md bg-slate-900/75 text-white text-[10px] font-semibold flex items-center gap-0.5">
-                              <Eye className="w-2.5 h-2.5" />
-                              {validPhotos.length > 1
-                                ? toBengaliDigits(validPhotos.length)
-                                : ''}
-                            </span>
+                            {validPhotos.length > 1 && (
+                              <span className="absolute bottom-0.5 right-0.5 px-1 py-0.2 rounded bg-slate-900/80 text-white text-[9px] font-semibold">
+                                +{toBengaliDigits(validPhotos.length - 1)}
+                              </span>
+                            )}
                           </button>
+                        ) : (
+                          <div className="w-11 h-11 rounded-lg bg-teal-50 dark:bg-teal-950/70 border border-teal-200 dark:border-teal-800 text-teal-700 dark:text-teal-300 flex items-center justify-center shrink-0">
+                            <Scissors className="w-5 h-5" />
+                          </div>
                         )}
 
                         <div className="min-w-0 flex-1">
-                          <p className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                            তারিখ: {formatDateDDMMYYYY(entry.date, true)}
-                          </p>
-                          <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-slate-100 break-words mt-0.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                              {formatDateDDMMYYYY(entry.date, true)}
+                            </span>
+                            <span
+                              className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${visual.workTextColor}`}
+                            >
+                              {visual.workLabelBn}
+                            </span>
+                          </div>
+                          <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 truncate mt-0.5">
                             {entry.itemName || entry.garmentType}
                           </h3>
-                          <p className="text-xs text-slate-600 dark:text-slate-400 break-words mt-0.5">
-                            ক্যাটাগরি: {entry.category || '—'} · সাইজ:{' '}
-                            {entry.size || '—'}
+                          <p className="text-[11px] text-slate-600 dark:text-slate-400 truncate">
+                            {entry.category || '—'} · সাইজ: {entry.size || '—'}
                             {entry.color ? ` · রঙ: ${entry.color}` : ''}
                           </p>
                         </div>
                       </div>
 
                       <div className="text-right shrink-0">
-                        <p className="text-base sm:text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-slate-100">
+                        <p className="text-base font-bold font-mono tabular-nums text-teal-700 dark:text-teal-300">
                           {formatTaka(entry.totalWage, true)}
                         </p>
-                        <p className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                        <p className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
                           দর: {formatTaka(entry.ratePerDozen, true)}/ডজন
                         </p>
                       </div>
                     </div>
 
+                    {/* Row 2: Pieces/Dozens + Formatted Duration ("১ দিন ৩ ঘণ্টা ২০ মিনিট") */}
+                    <div className="flex flex-wrap items-center justify-between gap-1.5 text-xs bg-slate-50/70 dark:bg-slate-950/50 px-2.5 py-1.5 rounded-lg border border-slate-200/60 dark:border-slate-800/60">
+                      <div className="flex items-center gap-1 font-mono text-slate-700 dark:text-slate-300">
+                        <span className="font-bold text-slate-900 dark:text-slate-100">
+                          {toBengaliDigits(entry.pieces ?? 0)} পিস
+                        </span>
+                        <span className="text-slate-400">·</span>
+                        <span>{formatDozensBn(entry.dozens)} ডজন</span>
+                      </div>
+
+                      {(durMinutes !== null || entry.startWorkTime || entry.endWorkTime) && (
+                        <div className="flex items-center gap-1 text-[11px] text-slate-600 dark:text-slate-400">
+                          <Clock className="w-3 h-3 text-teal-600 dark:text-teal-400 shrink-0" />
+                          <span>
+                            সময়কাল:{' '}
+                            <strong className="font-semibold text-slate-800 dark:text-slate-200">
+                              {durationBn}
+                            </strong>
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
                     {/* Additional Photo Strip if multiple photos uploaded */}
                     {validPhotos.length > 1 && (
-                      <div className="flex items-center gap-2 overflow-x-auto py-1">
+                      <div className="flex items-center gap-1.5 overflow-x-auto py-0.5">
                         {validPhotos.map((photo, pIdx) => {
                           const url = photo.previewUrl || photo.storagePath || '';
                           return (
@@ -1688,11 +1933,11 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                                   )})`,
                                   subtitle: `তারিখ: ${formatDateDDMMYYYY(
                                     entry.date,
-                                  true
+                                    true
                                   )}`,
                                 })
                               }
-                              className="w-12 h-12 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 shrink-0 cursor-pointer"
+                              className="w-10 h-10 rounded-md overflow-hidden border border-slate-200 dark:border-slate-700 shrink-0 cursor-pointer"
                             >
                               <img
                                 src={url}
@@ -1706,113 +1951,36 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                       </div>
                     )}
 
-                    {/* Quantities & Independent Statuses */}
-                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200/70 dark:border-slate-800/70 text-xs">
-                      <div>
-                        <span className="text-slate-500 dark:text-slate-400 block">
-                          পরিমাণ (পিস ও ডজন):
+                    {/* Row 3: Action Buttons (Compact: Settlement, Edit, Delete) - NO Start/End Work buttons */}
+                    <div className="flex items-center justify-between gap-1.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleQuickToggleSettlementOnEntry(entry)}
+                        className="min-h-[32px] px-2.5 py-1 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                      >
+                        <CheckCircle2 className="w-3 h-3" />
+                        <span>
+                          {entry.settlementStatus === 'settled'
+                            ? 'রেট নিষ্পত্তি হয়েছে'
+                            : 'রেট নিষ্পত্তি হয়নি'}
                         </span>
-                        <span className="font-mono tabular-nums font-bold text-slate-900 dark:text-slate-100">
-                          {toBengaliDigits(entry.pieces ?? 0)} পিস ·{' '}
-                          {formatDozensBn(entry.dozens)} ডজন
-                        </span>
-                      </div>
-                      <div className="text-right">
-                        <span className={`block font-semibold ${visual.workTextColor}`}>
-                          {visual.workLabelBn}
-                        </span>
-                        <span
-                          className={`block font-semibold ${visual.settlementTextColor}`}
-                        >
-                          {visual.settlementLabelBn}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Work Timing Information */}
-                    {(entry.startWorkTime ||
-                      entry.endWorkTime ||
-                      entry.shortDescription) && (
-                      <div className="rounded-xl bg-white/80 dark:bg-slate-900/80 border border-slate-200/70 dark:border-slate-800/70 p-2.5 text-xs space-y-1">
-                        {(entry.startWorkTime || entry.endWorkTime) && (
-                          <div className="flex flex-wrap items-center justify-between gap-1">
-                            <span className="text-slate-600 dark:text-slate-400">
-                              শুরু:{' '}
-                              <strong className="font-mono">
-                                {formatWorkTimestampBn(entry.startWorkTime)}
-                              </strong>
-                            </span>
-                            <span className="text-slate-600 dark:text-slate-400">
-                              শেষ:{' '}
-                              <strong className="font-mono">
-                                {formatWorkTimestampBn(entry.endWorkTime)}
-                              </strong>
-                            </span>
-                          </div>
-                        )}
-                        <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
-                          {(entry.startWorkTime || entry.endWorkTime) && (
-                            <span>
-                              সময়কাল: {formatDurationBn(entry.workDurationMinutes)}
-                            </span>
-                          )}
-                          {entry.shortDescription && (
-                            <span className="truncate max-w-[220px]">
-                              নোট: {entry.shortDescription}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Mobile Touch Action Buttons */}
-                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => handleQuickStartWorkOnEntry(entry)}
-                          className="min-h-[36px] px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
-                        >
-                          <Play className="w-3 h-3" />
-                          <span>কাজ শুরু</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleQuickEndWorkOnEntry(entry)}
-                          className="min-h-[36px] px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
-                        >
-                          <Square className="w-3 h-3" />
-                          <span>কাজ শেষ</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleQuickToggleSettlementOnEntry(entry)}
-                          className="min-h-[36px] px-2.5 py-1 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
-                        >
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>
-                            {entry.settlementStatus === 'settled'
-                              ? 'রেট নিষ্পত্তি হয়নি'
-                              : 'নিষ্পত্তি হয়েছে'}
-                          </span>
-                        </button>
-                      </div>
+                      </button>
 
                       <div className="flex items-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => handleOpenEditModal(entry)}
-                          className="min-h-[36px] px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1 cursor-pointer"
+                          className="min-h-[32px] px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-[11px] font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1 cursor-pointer"
                         >
-                          <Edit3 className="w-3.5 h-3.5" />
+                          <Edit3 className="w-3 h-3" />
                           <span>সম্পাদনা</span>
                         </button>
                         <button
                           type="button"
                           onClick={() => handleRequestSecureDelete(entry)}
-                          className="min-h-[36px] px-2.5 py-1 rounded-lg border border-rose-200 dark:border-rose-900/60 text-xs font-medium text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 inline-flex items-center gap-1 cursor-pointer"
+                          className="min-h-[32px] px-2.5 py-1 rounded-lg border border-rose-200 dark:border-rose-900/60 text-[11px] font-medium text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 inline-flex items-center gap-1 cursor-pointer"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <Trash2 className="w-3 h-3" />
                           <span>মুছুন</span>
                         </button>
                       </div>
@@ -1936,8 +2104,18 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                           <p className="text-slate-700 dark:text-slate-300 font-mono">
                             শেষ: {formatWorkTimestampBn(entry.endWorkTime)}
                           </p>
-                          <p className="text-slate-500 dark:text-slate-400 mt-0.5">
-                            সময়কাল: {formatDurationBn(entry.workDurationMinutes)}
+                          <p className="text-slate-600 dark:text-slate-400 font-medium mt-1">
+                            সময়কাল:{' '}
+                            <strong className="text-slate-800 dark:text-slate-200">
+                              {formatDurationBn(
+                                entry.workDurationMinutes && entry.workDurationMinutes > 0
+                                  ? entry.workDurationMinutes
+                                  : calculateDurationMinutes(
+                                      entry.startWorkTime,
+                                      entry.endWorkTime
+                                    )
+                              )}
+                            </strong>
                           </p>
                         </td>
                         <td className="py-3.5 px-4 text-xs align-top">
@@ -1952,42 +2130,22 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                         </td>
                         <td className="py-3.5 px-4 text-right whitespace-nowrap align-top">
                           <div className="flex flex-col items-end gap-1.5">
-                            <div className="inline-flex items-center gap-1">
-                              <button
-                                type="button"
-                                onClick={() => handleQuickStartWorkOnEntry(entry)}
-                                title="বর্তমান সময়ে কাজ শুরু রেকর্ড করুন"
-                                className="min-h-[34px] px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
-                              >
-                                <Play className="w-3 h-3" />
-                                <span>শুরু</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleQuickEndWorkOnEntry(entry)}
-                                title="বর্তমান সময়ে কাজ শেষ রেকর্ড করুন"
-                                className="min-h-[34px] px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
-                              >
-                                <Square className="w-3 h-3" />
-                                <span>শেষ</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleQuickToggleSettlementOnEntry(entry)
-                                }
-                                className="min-h-[34px] px-2.5 py-1 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-xs font-semibold cursor-pointer"
-                              >
-                                {entry.settlementStatus === 'settled'
-                                  ? 'রেট নিষ্পত্তি হয়নি'
-                                  : 'নিষ্পত্তি হয়েছে'}
-                              </button>
-                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleQuickToggleSettlementOnEntry(entry)
+                              }
+                              className="min-h-[32px] px-2.5 py-1 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-xs font-semibold cursor-pointer hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                            >
+                              {entry.settlementStatus === 'settled'
+                                ? 'রেট নিষ্পত্তি হয়েছে'
+                                : 'রেট নিষ্পত্তি হয়নি'}
+                            </button>
                             <div className="inline-flex items-center gap-1">
                               <button
                                 type="button"
                                 onClick={() => handleOpenEditModal(entry)}
-                                className="min-h-[34px] px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1 cursor-pointer"
+                                className="min-h-[32px] px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1 cursor-pointer"
                               >
                                 <Edit3 className="w-3.5 h-3.5" />
                                 <span>সম্পাদনা</span>
@@ -1995,7 +2153,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                               <button
                                 type="button"
                                 onClick={() => handleRequestSecureDelete(entry)}
-                                className="min-h-[34px] px-2.5 py-1 rounded-lg border border-rose-200 dark:border-rose-900/60 text-xs font-medium text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 inline-flex items-center gap-1 cursor-pointer"
+                                className="min-h-[32px] px-2.5 py-1 rounded-lg border border-rose-200 dark:border-rose-900/60 text-xs font-medium text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 inline-flex items-center gap-1 cursor-pointer"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                                 <span>মুছুন</span>
@@ -2147,6 +2305,132 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         defaultDateDDMMYYYY={draft.date || getTodayDDMMYYYY(false)}
         onApplyToForm={handleApplyVoiceDataToForm}
       />
+
+      {/* Bill Withdrawal Quick Modal (Default 4,000, Editable) */}
+      <ModalDrawer
+        isOpen={isWithdrawalModalOpen}
+        onClose={() => setIsWithdrawalModalOpen(false)}
+        titleBn="কোম্পানি থেকে বিল উত্তোলন যোগ করুন"
+        subtitleBn="ডিফল্টভাবে ৪,০০০ টাকা দেওয়া আছে, আপনি চাইলে যেকোনো পরিমাণ পরিবর্তন করতে পারেন"
+        maxWidthClass="max-w-lg"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!onSaveWithdrawal) return;
+            const amt = Number(withdrawalDraft.amount);
+            if (!Number.isFinite(amt) || amt <= 0) return;
+            onSaveWithdrawal({
+              id: withdrawalDraft.id || `wd-${Date.now()}`,
+              date: withdrawalDraft.date || getTodayDDMMYYYY(false),
+              amount: amt,
+              paymentMethod: withdrawalDraft.paymentMethod,
+              weekReference: 'মজুরি উত্তোলন',
+              approvedBy: 'অপারেটর',
+              voucherNo:
+                withdrawalDraft.voucherNo.trim() ||
+                `VCH-${Date.now().toString().slice(-4)}`,
+              remarks: withdrawalDraft.remarks.trim() || 'মজুরি উত্তোলন',
+            });
+            setIsWithdrawalModalOpen(false);
+            setStatusBannerBn(
+              `৳${toBengaliDigits(amt)} বিল উত্তোলন সফলভাবে যোগ করা হয়েছে।`
+            );
+          }}
+          className="p-4 sm:p-6 space-y-4"
+        >
+          <DateInputDDMMYYYY
+            id="modal-withdrawal-date"
+            labelBn="উত্তোলনের তারিখ (DD-MM-YYYY)"
+            valueDDMMYYYY={withdrawalDraft.date}
+            onChangeDDMMYYYY={(val) =>
+              setWithdrawalDraft((prev) => ({ ...prev, date: val }))
+            }
+          />
+
+          <FormInput
+            id="modal-withdrawal-amount"
+            labelBn="উত্তোলনের পরিমাণ (টাকা / ৳)"
+            type="number"
+            value={withdrawalDraft.amount}
+            onChange={(e) =>
+              setWithdrawalDraft((prev) => ({
+                ...prev,
+                amount: e.target.value,
+              }))
+            }
+            placeholder="৪০০০"
+            required
+          />
+          <p className="text-[11px] text-teal-700 dark:text-teal-400 font-medium">
+            💡 ডিফল্ট ৪,০০০ টাকা সেট করা আছে। প্রয়োজনে সম্পাদনা করুন।
+          </p>
+
+          <FormSelect
+            id="modal-withdrawal-method"
+            labelBn="পেমেন্ট মাধ্যম"
+            value={withdrawalDraft.paymentMethod}
+            onChange={(e) =>
+              setWithdrawalDraft((prev) => ({
+                ...prev,
+                paymentMethod: e.target.value,
+              }))
+            }
+            options={[
+              { value: 'নগদ (Cash)', labelBn: 'নগদ (Cash)' },
+              { value: 'বিকাশ (bKash)', labelBn: 'বিকাশ (bKash)' },
+              { value: 'রকেট (Rocket)', labelBn: 'রকেট (Rocket)' },
+              { value: 'নগদ (Nagad)', labelBn: 'নগদ মোবাইল ব্যাংকিং' },
+              { value: 'ব্যাংক ট্রান্সফার', labelBn: 'ব্যাংক ট্রান্সফার' },
+            ]}
+          />
+
+          <FormInput
+            id="modal-withdrawal-voucher"
+            labelBn="ভাউচার বা রিসিট নম্বর (ঐচ্ছিক)"
+            type="text"
+            value={withdrawalDraft.voucherNo}
+            onChange={(e) =>
+              setWithdrawalDraft((prev) => ({
+                ...prev,
+                voucherNo: e.target.value,
+              }))
+            }
+            placeholder="যেমন: VCH-2026"
+          />
+
+          <FormInput
+            id="modal-withdrawal-remarks"
+            labelBn="নোট / বিবরণ (ঐচ্ছিক)"
+            type="text"
+            value={withdrawalDraft.remarks}
+            onChange={(e) =>
+              setWithdrawalDraft((prev) => ({
+                ...prev,
+                remarks: e.target.value,
+              }))
+            }
+            placeholder="যেমন: চলতি সপ্তাহের বিল উত্তোলন"
+          />
+
+          <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-200 dark:border-slate-800">
+            <button
+              type="button"
+              onClick={() => setIsWithdrawalModalOpen(false)}
+              className="min-h-[42px] px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs sm:text-sm font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 cursor-pointer"
+            >
+              বাতিল করুন
+            </button>
+            <button
+              type="submit"
+              className="min-h-[42px] px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+            >
+              <ArrowDownRight className="w-4 h-4" />
+              <span>বিল উত্তোলন সংরক্ষণ করুন</span>
+            </button>
+          </div>
+        </form>
+      </ModalDrawer>
     </div>
   );
 };

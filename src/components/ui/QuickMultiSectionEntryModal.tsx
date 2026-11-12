@@ -132,8 +132,8 @@ export const QuickMultiSectionEntryModal: React.FC<
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
-  // 1. Bill Withdrawal state
-  const [withdrawalAmount, setWithdrawalAmount] = useState<string>('');
+  // 1. Bill Withdrawal state (Default 4,000 as requested, editable by user)
+  const [withdrawalAmount, setWithdrawalAmount] = useState<string>('4000');
   const [withdrawalMethod, setWithdrawalMethod] = useState<string>('নগদ (Cash)');
   const [withdrawalWeekRef, setWithdrawalWeekRef] = useState<string>('');
   const [withdrawalRemarks, setWithdrawalRemarks] = useState<string>('');
@@ -189,6 +189,7 @@ export const QuickMultiSectionEntryModal: React.FC<
       setDate(getTodayDDMMYYYY());
       setErrorMsg(null);
       setSuccessMsg(null);
+      setWithdrawalAmount((prev) => (prev ? prev : '4000'));
       if (funds.length > 0 && !selectedFundId) {
         setSelectedFundId(funds[0].id);
       }
@@ -230,7 +231,7 @@ export const QuickMultiSectionEntryModal: React.FC<
         approvedBy: 'স্ব-এন্ট্রি',
         remarks: withdrawalRemarks.trim() || 'বিল উত্তোলন',
       });
-      setWithdrawalAmount('');
+      setWithdrawalAmount('4000');
       setWithdrawalWeekRef('');
       setWithdrawalRemarks('');
       setSuccessMsg('বিল উত্তোলন সফলভাবে সংরক্ষিত হয়েছে!');

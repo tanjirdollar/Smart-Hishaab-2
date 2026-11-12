@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  ArrowDownRight,
   ArrowRight,
   Banknote,
   Calendar,
@@ -26,7 +27,11 @@ import {
   ProductionEntry,
   WeeklyEarningsPoint,
 } from '../types/models';
-import { formatCurrencyBDT, formatNumberBn } from '../utils/formatters';
+import {
+  formatCurrencyBDT,
+  formatNumberBn,
+  parseAnyDateToDateObj,
+} from '../utils/formatters';
 import {
   computeMultiWeekComparison,
   computeSaturdayToThursdayWeekSummary,
@@ -120,6 +125,34 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       ),
     [recentWeeksChartData]
   );
+
+  const recentCombinedStream = useMemo(() => {
+    type CombinedItem =
+      | { kind: 'production'; entry: ProductionEntry; timestamp: number }
+      | { kind: 'withdrawal'; record: PaymentWithdrawalRecord; timestamp: number };
+
+    const prods: CombinedItem[] = (recentProduction || []).map((entry) => {
+      const dt = parseAnyDateToDateObj(entry.date);
+      return {
+        kind: 'production',
+        entry,
+        timestamp: dt ? dt.getTime() : 0,
+      };
+    });
+
+    const withdrawals: CombinedItem[] = (paymentWithdrawals || []).map((record) => {
+      const dt = parseAnyDateToDateObj(record.date);
+      return {
+        kind: 'withdrawal',
+        record,
+        timestamp: dt ? dt.getTime() : 0,
+      };
+    });
+
+    return [...prods, ...withdrawals]
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, 6);
+  }, [recentProduction, paymentWithdrawals]);
 
   return (
     <div className="space-y-4">
@@ -408,25 +441,61 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           <div>
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                সাম্প্রতিক প্রোডাকশন এন্ট্রি
+                সাম্প্রতিক প্রোডাকশন ও বিল উত্তোলন
               </h2>
               <button
                 type="button"
                 onClick={() => onNavigate(ModuleId.PRODUCTION)}
                 className="text-xs font-semibold text-teal-700 dark:text-teal-400 hover:underline flex items-center gap-1 cursor-pointer"
               >
-                সব দেখুন ({formatNumberBn(recentProduction.length)})
+                সব দেখুন ({formatNumberBn(recentProduction.length + paymentWithdrawals.length)})
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             </div>
 
-            {recentProduction.length === 0 ? (
+            {recentCombinedStream.length === 0 ? (
               <p className="text-xs text-slate-500 py-8 text-center">
-                কোনো প্রোডাকশন এন্ট্রি নেই।
+                কোনো সাম্প্রতিক হিসাব এন্ট্রি নেই।
               </p>
             ) : (
               <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                {recentProduction.slice(0, 5).map((entry) => {
+                {recentCombinedStream.map((item) => {
+                  if (item.kind === 'withdrawal') {
+                    const w = item.record;
+                    return (
+                      <div
+                        key={w.id}
+                        className="py-2.5 flex items-center justify-between gap-2.5 bg-emerald-50/40 dark:bg-emerald-950/20 px-2 rounded-xl my-1"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-9 h-9 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                            <ArrowDownRight className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200">
+                                বিল উত্তোলন
+                              </span>
+                              <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                {w.voucherNo ? `ভাউচার: ${w.voucherNo}` : 'কোম্পানি উত্তোলন'}
+                              </p>
+                            </div>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                              {w.date} · {w.paymentMethod || 'নগদ'} {w.remarks ? `· ${w.remarks}` : ''}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="text-xs font-bold font-mono text-emerald-700 dark:text-emerald-400">
+                            -{formatCurrencyBDT(w.amount ?? 0)}
+                          </p>
+                          <StatusBadge label="উত্তোলন সম্পন্ন" variant="success" />
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  const entry = item.entry;
                   const thumb = entry.photos?.[0]?.previewUrl;
                   return (
                     <div
@@ -434,12 +503,16 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                       className="py-2.5 flex items-center justify-between gap-2.5"
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
-                        {thumb && (
+                        {thumb ? (
                           <img
                             src={thumb}
                             alt={entry.itemName}
                             className="w-9 h-9 rounded-lg object-cover border border-slate-200 dark:border-slate-700 shrink-0"
                           />
+                        ) : (
+                          <div className="w-9 h-9 rounded-lg bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 flex items-center justify-center shrink-0">
+                            <Scissors className="w-4 h-4" />
+                          </div>
                         )}
                         <div className="min-w-0">
                           <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
@@ -452,7 +525,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                         </div>
                       </div>
                       <div className="text-right shrink-0">
-                        <p className="text-xs font-bold text-teal-700 dark:text-teal-300">
+                        <p className="text-xs font-bold text-teal-700 dark:text-teal-300 font-mono">
                           {formatCurrencyBDT(entry.totalWage)}
                         </p>
                         <StatusBadge

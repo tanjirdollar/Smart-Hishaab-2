@@ -272,7 +272,7 @@ export function calculateDurationMinutes(
 }
 
 /**
- * Formats duration in minutes into readable Bengali string (e.g., "২ ঘণ্টা ১৫ মিনিট").
+ * Formats duration in minutes into readable Bengali string (e.g., "১ দিন ৩ ঘণ্টা ২০ মিনিট" or "২ ঘণ্টা ১৫ মিনিট").
  */
 export function formatDurationBn(minutes: number | null | undefined): string {
   if (minutes === null || minutes === undefined || !Number.isFinite(minutes)) {
@@ -281,8 +281,18 @@ export function formatDurationBn(minutes: number | null | undefined): string {
   if (minutes < 0) {
     return 'অবৈধ সময়ক্রম';
   }
-  const hrs = Math.floor(minutes / 60);
-  const mins = minutes % 60;
+  const totalMinutes = Math.round(minutes);
+  const days = Math.floor(totalMinutes / 1440);
+  const hrs = Math.floor((totalMinutes % 1440) / 60);
+  const mins = totalMinutes % 60;
+
+  if (days > 0) {
+    const parts: string[] = [`${toBengaliDigits(days)} দিন`];
+    if (hrs > 0) parts.push(`${toBengaliDigits(hrs)} ঘণ্টা`);
+    if (mins > 0) parts.push(`${toBengaliDigits(mins)} মিনিট`);
+    return parts.join(' ');
+  }
+
   if (hrs === 0) {
     return `${toBengaliDigits(mins)} মিনিট`;
   }
