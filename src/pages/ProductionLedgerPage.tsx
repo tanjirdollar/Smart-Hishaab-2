@@ -147,7 +147,7 @@ function getEntryVisualCardStyle(entry: ProductionEntry): {
     : 'রেট নিষ্পত্তি হয়নি';
   const settlementTextColor = isRateSettled
     ? 'text-emerald-700 dark:text-emerald-300'
-    : 'text-amber-700 dark:text-amber-300';
+    : 'text-rose-700 dark:text-rose-400';
 
   if (isRateSettled) {
     return {
@@ -2135,11 +2135,22 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                               onClick={() =>
                                 handleQuickToggleSettlementOnEntry(entry)
                               }
-                              className="min-h-[32px] px-2.5 py-1 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-xs font-semibold cursor-pointer hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                              className={`min-h-[32px] px-2.5 py-1 rounded-lg border text-xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs ${
+                                entry.settlementStatus === 'settled'
+                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600'
+                                  : 'bg-rose-600 hover:bg-rose-700 text-white border-rose-600'
+                              }`}
                             >
-                              {entry.settlementStatus === 'settled'
-                                ? 'রেট নিষ্পত্তি হয়েছে'
-                                : 'রেট নিষ্পত্তি হয়নি'}
+                              {entry.settlementStatus === 'settled' ? (
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                              ) : (
+                                <AlertTriangle className="w-3.5 h-3.5" />
+                              )}
+                              <span>
+                                {entry.settlementStatus === 'settled'
+                                  ? 'নিষ্পত্তি হয়েছে'
+                                  : 'রেট নিষ্পত্তি হয়নি'}
+                              </span>
                             </button>
                             <div className="inline-flex items-center gap-1">
                               <button

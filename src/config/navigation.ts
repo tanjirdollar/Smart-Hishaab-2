@@ -47,11 +47,11 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
     groupBn: 'প্রধান মডিউল',
   },
   {
-    id: ModuleId.IMPORT_DATA,
-    labelBn: 'ডেটা ইমপোর্ট (Sheets/Excel)',
-    shortLabelBn: 'ইমপোর্ট',
-    descriptionBn: 'Google Sheets, Excel (XLSX) বা CSV ফাইল থেকে পূর্ববর্তী প্রোডাকশন ও হিসাব ইমপোর্ট',
-    iconName: 'FileSpreadsheet',
+    id: ModuleId.INCOME_EXPENSE,
+    labelBn: 'আয়-ব্যয়',
+    shortLabelBn: 'আয়-ব্যয়',
+    descriptionBn: 'দৈনন্দিন ব্যক্তিগত ও পারিবারিক আয় এবং খরচের খাতওয়ারি হিসাব',
+    iconName: 'ArrowLeftRight',
     groupBn: 'প্রধান মডিউল',
   },
   {
@@ -87,14 +87,6 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
     groupBn: 'আর্থিক ব্যবস্থাপনা',
   },
   {
-    id: ModuleId.INCOME_EXPENSE,
-    labelBn: 'আয়-ব্যয়',
-    shortLabelBn: 'আয়-ব্যয়',
-    descriptionBn: 'দৈনন্দিন ব্যক্তিগত ও পারিবারিক আয় এবং খরচের খাতওয়ারি হিসাব',
-    iconName: 'ArrowLeftRight',
-    groupBn: 'আর্থিক ব্যবস্থাপনা',
-  },
-  {
     id: ModuleId.REPORTS,
     labelBn: 'রিপোর্ট',
     shortLabelBn: 'রিপোর্ট',
@@ -114,7 +106,7 @@ export const NAVIGATION_ITEMS: NavigationItem[] = [
     id: ModuleId.SETTINGS,
     labelBn: 'সেটিংস',
     shortLabelBn: 'সেটিংস',
-    descriptionBn: 'অপারেটর প্রোফাইল, থিম (লাইট/ডার্ক), মুদ্রা ও অ্যাপ্লিকেশন কনফিগারেশন',
+    descriptionBn: 'অপারেটর প্রোফাইল, থিম (লাইট/ডার্ক), ব্যাকআপ, অ্যাপ ইনস্টল ও কনফিগারেশন',
     iconName: 'Settings',
     groupBn: 'বিশ্লেষণ ও সিস্টেম',
   },
@@ -124,7 +116,7 @@ export const MOBILE_PRIMARY_NAV_IDS: ModuleId[] = [
   ModuleId.DASHBOARD,
   ModuleId.PRODUCTION,
   ModuleId.WEEKLY_REPORT,
-  ModuleId.IMPORT_DATA,
+  ModuleId.INCOME_EXPENSE,
 ];
 
 export const GARMENT_ITEM_NAME_OPTIONS: string[] = [];

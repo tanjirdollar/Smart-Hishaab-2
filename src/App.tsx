@@ -935,6 +935,8 @@ export default function App() {
             theme={theme}
             onSelectTheme={setTheme}
             onOpenLoginView={() => setShowLoginView(true)}
+            onOpenExportModal={() => setIsExportModalOpen(true)}
+            onNavigate={setActiveModule}
           />
         );
       default:
@@ -961,7 +963,6 @@ export default function App() {
           theme={theme}
           onToggleTheme={handleToggleTheme}
           onOpenLoginView={() => setShowLoginView(true)}
-          onOpenExportModal={() => setIsExportModalOpen(true)}
           currentUser={currentUser}
         />
 

@@ -1,28 +1,33 @@
 import React, { useState } from 'react';
 import {
-  Factory,
-  Globe,
+  Download,
+  FileSpreadsheet,
   LogIn,
   Moon,
   Save,
+  Smartphone,
   Sun,
   User,
 } from 'lucide-react';
-import { ThemeMode } from '../types/models';
+import { ModuleId, ThemeMode } from '../types/models';
 import { FormInput, FormSelect } from '../components/ui/FormFields';
 import { PageHeader } from '../components/ui/PageHeader';
-import { SummaryCard } from '../components/ui/SummaryCard';
+import { PWAInstallButton } from '../components/ui/PWAInstallButton';
 
 export interface SettingsPageProps {
   theme: ThemeMode;
   onSelectTheme: (theme: ThemeMode) => void;
   onOpenLoginView: () => void;
+  onOpenExportModal?: () => void;
+  onNavigate?: (module: ModuleId) => void;
 }
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({
   theme,
   onSelectTheme,
   onOpenLoginView,
+  onOpenExportModal,
+  onNavigate,
 }) => {
   const [operatorName, setOperatorName] = useState('');
   const [factoryName, setFactoryName] = useState('');
@@ -38,11 +43,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <PageHeader
-        moduleIndexBn="১০. বিশ্লেষণ ও সিস্টেম · সেটিংস"
-        titleBn="অ্যাপ্লিকেশন সেটিংস ও অপারেটর প্রোফাইল"
-        subtitleBn="লাইট/ডার্ক মোড পরিবর্তন, সুইং মেশিন অপারেটরের তথ্য, ভাষা, মুদ্রা (৳) এবং তারিখ ফরম্যাট (DD-MM-YYYY) কনফিগারেশন"
+        titleBn="সেটিংস, ডেটা ব্যাকআপ ও অ্যাপ ইনস্টল"
+        subtitleBn="লাইট/ডার্ক থিম, সমস্ত হিসাব ব্যাকআপ/এক্সপোর্ট, স্প্রেডশিট ইমপোর্ট এবং ফোনে অ্যাপ ইনস্টল"
         primaryActionLabelBn="Google লগইন পৃষ্ঠা দেখুন"
         primaryActionIcon={<LogIn className="w-4 h-4" />}
         onPrimaryAction={onOpenLoginView}
@@ -61,41 +65,83 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         </div>
       )}
 
-      {/* Summary Cards for Regional & Display Standards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <SummaryCard
-          titleBn="ভাষা ও মুদ্রা মানদণ্ড"
-          amount={null}
-          customValueBn="বাংলা · টাকা (৳)"
-          subtitleBn="বাংলাদেশী গার্মেন্টস অপারেটরদের জন্য নির্ধারিত"
-          dbColumnHint="BDT (৳)"
-          icon={<Globe className="w-5 h-5" />}
-          tone="accent"
-        />
-        <SummaryCard
-          titleBn="তারিখের ফরম্যাট"
-          amount={null}
-          customValueBn="DD-MM-YYYY"
-          subtitleBn="দিন - মাস - বছর (সকল ফর্ম ও টেবিলে)"
-          dbColumnHint="DD-MM-YYYY"
-          icon={<Factory className="w-5 h-5" />}
-          tone="positive"
-        />
-        <SummaryCard
-          titleBn="বর্তমান ডিসপ্লে থিম"
-          amount={null}
-          customValueBn={theme === 'dark' ? 'ডার্ক মোড' : 'লাইট মোড'}
-          subtitleBn="চোখের আরামের জন্য যেকোনো সময় পরিবর্তনযোগ্য"
-          dbColumnHint="theme_mode"
-          icon={
-            theme === 'dark' ? (
-              <Moon className="w-5 h-5" />
-            ) : (
-              <Sun className="w-5 h-5" />
-            )
-          }
-          tone="default"
-        />
+      {/* Data Backup / Export, Import & Mobile App Install Section */}
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+        <div>
+          <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+            ডেটা ব্যাকআপ, ইমপোর্ট ও মোবাইল অ্যাপ ইনস্টল
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            আপনার সমস্ত হিসাব নিরাপদে ডাউনলোড/ব্যাকআপ করুন, পুরাতন ফাইল ইমপোর্ট করুন অথবা ফোনে অ্যাপ হিসেবে ইনস্টল করুন
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+          {/* Backup / Export Card */}
+          {onOpenExportModal && (
+            <div className="rounded-2xl border border-teal-200 dark:border-teal-800/80 bg-teal-50/50 dark:bg-teal-950/25 p-4 flex flex-col justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-teal-700 text-white flex items-center justify-center shrink-0">
+                  <Download className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                    ডেটা ব্যাকআপ ও এক্সপোর্ট (Export)
+                  </h3>
+                  <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                    সকল প্রোডাকশন, মজুরি, ফান্ড ও আয়-ব্যয়ের হিসাব JSON ব্যাকআপ, Excel (.xlsx) বা CSV ফাইলে ডাউনলোড করুন।
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onOpenExportModal}
+                className="w-full min-h-[42px] px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <Download className="w-4 h-4" />
+                <span>ব্যাকআপ / এক্সপোর্ট ফাইল ডাউনলোড করুন</span>
+              </button>
+            </div>
+          )}
+
+          {/* Spreadsheet / Backup Import Card */}
+          {onNavigate && (
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/50 p-4 flex flex-col justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-slate-800 dark:bg-slate-700 text-white flex items-center justify-center shrink-0">
+                  <FileSpreadsheet className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                    স্প্রেডশিট বা ব্যাকআপ ইমপোর্ট (Import)
+                  </h3>
+                  <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                    Google Sheets, Excel (.xlsx), CSV অথবা JSON ব্যাকআপ ফাইল থেকে আপনার হিসাব ইমপোর্ট করুন।
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onNavigate(ModuleId.IMPORT_DATA)}
+                className="w-full min-h-[42px] px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-900 dark:text-slate-100 text-xs font-bold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <FileSpreadsheet className="w-4 h-4 text-teal-700 dark:text-teal-400" />
+                <span>ডেটা ইমপোর্ট পেজে যান →</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Mobile App Install (PWA) */}
+        <div className="pt-2">
+          <div className="flex items-center gap-2 mb-2">
+            <Smartphone className="w-4 h-4 text-teal-700 dark:text-teal-400" />
+            <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+              মোবাইল অ্যাপ ইনস্টল (হোম স্ক্রিনে যুক্ত করুন)
+            </span>
+          </div>
+          <PWAInstallButton variant="button" />
+        </div>
       </div>
 
       {/* Theme Switcher Card */}
@@ -105,7 +151,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             অ্যাপ্লিকেশন থিম (লাইট ও ডার্ক মোড)
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            অ্যান্ড্রয়েড মোবাইলের ব্যাটারি সাশ্রয় ও রাতের বেলা ব্যবহারের জন্য ডার্ক মোড অথবা দিনের আলোতে লাইট মোড নির্বাচন করুন
+            আপনার নির্বাচিত মোড ব্রাউজারে স্থায়ীভাবে সংরক্ষিত থাকবে, রিফ্রেশ করলেও পরিবর্তন হবে না
           </p>
         </div>
 
