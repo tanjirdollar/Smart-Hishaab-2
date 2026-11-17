@@ -16,6 +16,9 @@ import {
   calculateEarnedWageFromPiecesAndRate,
   ddMmYyyyToIsoInput,
   isoInputToDDMMYYYY,
+  normalizeToDDMMYYYY,
+  toAsciiDigits,
+  toDateTimeLocalInputValue,
 } from '../utils/formatters';
 
 /**
@@ -24,13 +27,12 @@ import {
  * Maps between the application's ProductionEntry model and the `public.production_entries`
  * table in Supabase, preserving historical rates, timestamps, and independent statuses.
  *
- * Includes TWO automatic resilience layers:
+ * Includes automatic resilience layers:
  * 1. Legacy-column fallback (`PGRST204`): Works even if only Phase-1 columns exist.
- * 2. Missing-table cloud fallback (`PGRST205` / `Could not find the table 'public.production_entries'`):
- *    If the user has not yet run the SQL script in Supabase SQL Editor to create `public.production_entries`,
- *    automatically persists and loads production entries via Supabase Auth `user_metadata`
- *    (`supabase.auth.updateUser`) so data is still saved in the user's Supabase cloud account across refreshes
- *    and automatically migrates into `public.production_entries` as soon as the table is created!
+ * 2. Dual Cloud Persistence (`public.production_entries` + Supabase Auth `user_metadata`):
+ *    Reads from BOTH `public.production_entries` and `user_metadata` (`smart_hisab_production_entries_v1`)
+ *    and merges them intelligently so manually added entries and edited records are never lost
+ *    regardless of which layer stored them.
  */
 
 const AUTH_METADATA_ENTRIES_KEY = 'smart_hisab_production_entries_v1';
@@ -50,7 +52,7 @@ export function isValidUuid(id: string): boolean {
 }
 
 /**
- * Converts any legacy or backup ID (such as "TRX-178749989806673", "prod-bkp-1", "1")
+ * Converts any legacy or backup ID (such as "TRX-178749989806673", "prod-bkp-1", "prod-173...")
  * into a canonical, deterministic UUID v4 string so Supabase always upserts/deletes in place.
  */
 export function toDeterministicUuid(rawId: string): string {
@@ -91,10 +93,30 @@ export function toDeterministicUuid(rawId: string): string {
   return `${p1}-${p2}-${p3}-${p4}-${p5}`.toLowerCase();
 }
 
+export function normalizeItemNameForSignature(rawItemName: string): string {
+  return String(rawItemName || '')
+    .replace(/\s*\((কটি|কর্টি|গোলগোলা|গোলগলা|শার্ট|প্যান্ট|অন্যান্য)\)\s*$/u, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function getEntryDateItemSignature(
   entry: Pick<ProductionEntry, 'date' | 'itemName'>
 ): string {
-  return `${String(entry.date || '').trim()}|${String(entry.itemName || '').trim()}`;
+  const normDate =
+    normalizeToDDMMYYYY(entry.date) || String(entry.date || '').trim();
+  const normItem = normalizeItemNameForSignature(entry.itemName);
+  return `${normDate}|${normItem}`;
+}
+
+function cleanNoteForBackupComparison(rawNote?: string | null): string {
+  if (!rawNote) return '';
+  const cleaned = String(rawNote)
+    .replace(/\[ট্যাগ:\s*[^\]]+\]/g, '')
+    .replace(/^Done\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned;
 }
 
 export function getLocalDeletedTombstones(): DeletedTombstones {
@@ -181,8 +203,113 @@ export function isEntryDeletedByTombstone(
 }
 
 /**
+ * Computes a numeric modification score comparing an entry against its original reference backup version:
+ * - Score 0: Entry is an UNEDITED raw backup entry.
+ * - Score 5..95: Entry is an EDITED version of a backup entry (higher score = more fields edited by user).
+ * - Score 100: Entry is a MANUALLY CREATED entry outside the backup (or had its date/itemName edited).
+ */
+export function computeEntryModificationScore(
+  entry: ProductionEntry,
+  backupBySig: Map<string, ProductionEntry>,
+  backupByUuid: Map<string, ProductionEntry>,
+  hasReferenceBackup: boolean
+): number {
+  if (!hasReferenceBackup) {
+    return 0;
+  }
+
+  const sig = getEntryDateItemSignature(entry);
+  const uuid = toDeterministicUuid(entry.id);
+  const bkp = backupByUuid.get(uuid) || backupBySig.get(sig);
+
+  if (!bkp) {
+    // Manually created entry outside the imported backup (or user changed Date / Item Name)
+    return 100;
+  }
+
+  let score = 0;
+
+  if (Math.round(entry.pieces ?? 0) !== Math.round(bkp.pieces ?? 0)) {
+    score += 20;
+  }
+  if (
+    Math.abs(Number(entry.ratePerDozen ?? 0) - Number(bkp.ratePerDozen ?? 0)) >
+    0.01
+  ) {
+    score += 20;
+  }
+  if (
+    Math.abs(Number(entry.totalWage ?? 0) - Number(bkp.totalWage ?? 0)) > 0.01
+  ) {
+    score += 20;
+  }
+  if (entry.settlementStatus !== bkp.settlementStatus) {
+    score += 25;
+  }
+  if (entry.workStatus !== bkp.workStatus) {
+    score += 25;
+  }
+  if (
+    toDateTimeLocalInputValue(entry.startWorkTime) !==
+    toDateTimeLocalInputValue(bkp.startWorkTime)
+  ) {
+    score += 15;
+  }
+  if (
+    toDateTimeLocalInputValue(entry.endWorkTime) !==
+    toDateTimeLocalInputValue(bkp.endWorkTime)
+  ) {
+    score += 15;
+  }
+  if (
+    entry.workDurationMinutes !== null &&
+    entry.workDurationMinutes !== undefined &&
+    entry.workDurationMinutes !== bkp.workDurationMinutes
+  ) {
+    score += 10;
+  }
+  if (
+    cleanNoteForBackupComparison(entry.shortDescription) !==
+    cleanNoteForBackupComparison(bkp.shortDescription)
+  ) {
+    score += 15;
+  }
+  if (
+    toAsciiDigits(entry.size || '').replace(/\s+/g, '') !==
+    toAsciiDigits(bkp.size || '').replace(/\s+/g, '')
+  ) {
+    score += 10;
+  }
+  if ((entry.color || '').trim() !== (bkp.color || '').trim()) {
+    score += 10;
+  }
+  if (
+    entry.category &&
+    bkp.category &&
+    entry.category.trim() !== bkp.category.trim()
+  ) {
+    score += 10;
+  }
+  if (
+    normalizeItemNameForSignature(entry.itemName) !==
+    normalizeItemNameForSignature(bkp.itemName)
+  ) {
+    score += 20;
+  }
+  if (
+    (normalizeToDDMMYYYY(entry.date) || entry.date) !==
+    (normalizeToDDMMYYYY(bkp.date) || bkp.date)
+  ) {
+    score += 20;
+  }
+
+  return score;
+}
+
+/**
  * Deduplicates production entries and removes any resurrected/deleted records or
- * unedited backup duplicates when an imported record was modified by the user.
+ * unedited backup duplicates when an imported record was modified by the user,
+ * while strictly preserving all manually added entries and user edits.
  */
 export function deduplicateAndCleanProductionEntries(
   entries: ProductionEntry[],
@@ -193,9 +320,11 @@ export function deduplicateAndCleanProductionEntries(
 } {
   const tombstones = getLocalDeletedTombstones();
   const obsoleteIds = new Set<string>();
+  const hasReferenceBackup = referenceBackupEntries.length > 0;
 
   // Build lookup maps from the reference backup (if available)
   const backupBySig = new Map<string, ProductionEntry>();
+  const backupByUuid = new Map<string, ProductionEntry>();
   const backupPhotosBySig = new Map<string, UploadedPhotoPreview[]>();
   const backupPhotosByUuid = new Map<string, UploadedPhotoPreview[]>();
 
@@ -203,17 +332,21 @@ export function deduplicateAndCleanProductionEntries(
     const sig = getEntryDateItemSignature(bkp);
     const bkpUuid = toDeterministicUuid(bkp.id);
     backupBySig.set(sig, bkp);
+    backupByUuid.set(bkpUuid, bkp);
     if (bkp.photos && bkp.photos.length > 0) {
       backupPhotosBySig.set(sig, bkp.photos);
       backupPhotosByUuid.set(bkpUuid, bkp.photos);
     }
   }
 
-  // Step 1: Filter out tombstoned (deleted) entries and normalize IDs
+  // Step 1: Filter out tombstoned (deleted) entries and normalize IDs & rehydrate backup photos
   const surviving: ProductionEntry[] = [];
   for (const item of entries) {
+    if (!item || (!item.itemName && !item.garmentType && !item.pieces)) {
+      continue;
+    }
     if (isEntryDeletedByTombstone(item, tombstones)) {
-      if (isValidUuid(item.id)) obsoleteIds.add(item.id);
+      if (isValidUuid(item.id)) obsoleteIds.add(item.id.toLowerCase());
       obsoleteIds.add(toDeterministicUuid(item.id));
       continue;
     }
@@ -229,38 +362,40 @@ export function deduplicateAndCleanProductionEntries(
     surviving.push({
       ...item,
       id: normalizedId,
+      date: normalizeToDDMMYYYY(item.date) || item.date,
       photos: restoredPhotos,
     });
   }
 
-  // Helper to check if an entry differs from its original raw backup version (meaning user edited it)
-  const isModifiedFromBackup = (entry: ProductionEntry): boolean => {
-    const sig = getEntryDateItemSignature(entry);
-    const bkp = backupBySig.get(sig);
-    if (!bkp) return true; // User-created or itemName was edited
-    return (
-      (entry.pieces ?? 0) !== (bkp.pieces ?? 0) ||
-      Number(entry.ratePerDozen ?? 0) !== Number(bkp.ratePerDozen ?? 0) ||
-      Number(entry.totalWage ?? 0) !== Number(bkp.totalWage ?? 0) ||
-      entry.settlementStatus !== bkp.settlementStatus ||
-      entry.workStatus !== bkp.workStatus ||
-      (entry.shortDescription || '').trim() !== (bkp.shortDescription || '').trim() ||
-      (entry.size || '').trim() !== (bkp.size || '').trim() ||
-      (entry.color || '').trim() !== (bkp.color || '').trim()
+  const getScore = (entry: ProductionEntry): number =>
+    computeEntryModificationScore(
+      entry,
+      backupBySig,
+      backupByUuid,
+      hasReferenceBackup
     );
-  };
 
-  // Step 2: Deduplicate by canonical UUID first
+  // Step 2: Deduplicate by canonical UUID first (preferring higher modification score, then newer createdAt)
   const byUuid = new Map<string, ProductionEntry>();
   for (const entry of surviving) {
     const existing = byUuid.get(entry.id);
     if (!existing) {
       byUuid.set(entry.id, entry);
     } else {
-      // Prefer the entry that was modified from backup
-      const existingModified = isModifiedFromBackup(existing);
-      const currentModified = isModifiedFromBackup(entry);
-      if (currentModified && !existingModified) {
+      const existingScore = getScore(existing);
+      const currentScore = getScore(entry);
+      const tExisting = existing.createdAt
+        ? new Date(existing.createdAt).getTime()
+        : 0;
+      const tCurrent = entry.createdAt
+        ? new Date(entry.createdAt).getTime()
+        : 0;
+
+      const shouldPreferCurrent =
+        currentScore > existingScore ||
+        (currentScore === existingScore && tCurrent > tExisting);
+
+      if (shouldPreferCurrent) {
         byUuid.set(entry.id, {
           ...entry,
           photos:
@@ -268,12 +403,20 @@ export function deduplicateAndCleanProductionEntries(
               ? entry.photos
               : existing.photos,
         });
+      } else if (
+        (!existing.photos || existing.photos.length === 0) &&
+        entry.photos &&
+        entry.photos.length > 0
+      ) {
+        byUuid.set(entry.id, {
+          ...existing,
+          photos: entry.photos,
+        });
       }
     }
   }
 
-  // Step 3: Deduplicate pairs that share the same Date + ItemName where one is an old unedited backup copy
-  // and the other is the edited version (created before deterministic UUIDs were enforced)
+  // Step 3: Group by normalized Date + ItemName signature
   const bySigGroups = new Map<string, ProductionEntry[]>();
   for (const entry of byUuid.values()) {
     const sig = getEntryDateItemSignature(entry);
@@ -283,53 +426,102 @@ export function deduplicateAndCleanProductionEntries(
   }
 
   const finalEntries: ProductionEntry[] = [];
-  for (const [, group] of bySigGroups.entries()) {
+  for (const [sig, group] of bySigGroups.entries()) {
     if (group.length === 1) {
       finalEntries.push(group[0]);
       continue;
     }
 
-    // Multiple entries share the exact same Date + ItemName:
-    // Sort so that user-modified entries come BEFORE unedited backup clones
-    const sortedGroup = group.slice().sort((a, b) => {
-      const aMod = isModifiedFromBackup(a) ? 1 : 0;
-      const bMod = isModifiedFromBackup(b) ? 1 : 0;
-      if (aMod !== bMod) return bMod - aMod;
-      // Prefer entry with a newer createdAt if both are modified
-      const tA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const tB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      return tB - tA;
-    });
+    const isBackupSignature = backupBySig.has(sig);
 
-    const winner = sortedGroup[0];
-    const fallbackPhoto =
-      sortedGroup.find((g) => g.photos && g.photos.length > 0)?.photos || [];
-    finalEntries.push({
-      ...winner,
-      photos:
-        winner.photos && winner.photos.length > 0
-          ? winner.photos
-          : fallbackPhoto,
-    });
+    if (isBackupSignature) {
+      // Multiple entries share the Date + ItemName of an imported backup record:
+      // Always prefer the user-modified entry (score > 0) over the unedited backup clone (score === 0)!
+      const sortedGroup = group.slice().sort((a, b) => {
+        const scoreA = getScore(a);
+        const scoreB = getScore(b);
+        if (scoreA !== scoreB) return scoreB - scoreA;
+        const tA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const tB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return tB - tA;
+      });
 
-    for (let i = 1; i < sortedGroup.length; i++) {
-      if (sortedGroup[i].id !== winner.id) {
-        obsoleteIds.add(sortedGroup[i].id);
+      const winner = sortedGroup[0];
+      const fallbackPhoto =
+        sortedGroup.find((g) => g.photos && g.photos.length > 0)?.photos ||
+        backupPhotosBySig.get(sig) ||
+        [];
+      finalEntries.push({
+        ...winner,
+        photos:
+          winner.photos && winner.photos.length > 0
+            ? winner.photos
+            : fallbackPhoto,
+      });
+
+      for (let i = 1; i < sortedGroup.length; i++) {
+        if (sortedGroup[i].id !== winner.id) {
+          obsoleteIds.add(sortedGroup[i].id);
+        }
+      }
+    } else {
+      // Manual entries outside the backup that share the same Date + ItemName:
+      // Only collapse if they have the exact same pieces, ratePerDozen, totalWage, size, and color.
+      // Otherwise keep ALL of them so multiple manual batches on the same day are never lost!
+      const uniqueManualByContent = new Map<string, ProductionEntry>();
+      for (const item of group) {
+        const contentKey = `${item.pieces ?? 0}|${Number(
+          item.ratePerDozen ?? 0
+        ).toFixed(2)}|${Number(item.totalWage ?? 0).toFixed(2)}|${toAsciiDigits(
+          item.size || ''
+        ).trim()}|${(item.color || '').trim()}|${(
+          item.shortDescription || ''
+        ).trim()}`;
+
+        const existingManual = uniqueManualByContent.get(contentKey);
+        if (!existingManual) {
+          uniqueManualByContent.set(contentKey, item);
+        } else {
+          const tExisting = existingManual.createdAt
+            ? new Date(existingManual.createdAt).getTime()
+            : 0;
+          const tCurrent = item.createdAt
+            ? new Date(item.createdAt).getTime()
+            : 0;
+          if (tCurrent > tExisting) {
+            obsoleteIds.add(existingManual.id);
+            uniqueManualByContent.set(contentKey, {
+              ...item,
+              photos:
+                item.photos && item.photos.length > 0
+                  ? item.photos
+                  : existingManual.photos,
+            });
+          } else if (item.id !== existingManual.id) {
+            obsoleteIds.add(item.id);
+          }
+        }
+      }
+      for (const uniqueManual of uniqueManualByContent.values()) {
+        finalEntries.push(uniqueManual);
       }
     }
   }
 
   // Sort newest date first
   finalEntries.sort((a, b) => {
-    const [dA, mA, yA] = String(a.date || '')
+    const [dA, mA, yA] = toAsciiDigits(String(a.date || ''))
       .split('-')
       .map(Number);
-    const [dB, mB, yB] = String(b.date || '')
+    const [dB, mB, yB] = toAsciiDigits(String(b.date || ''))
       .split('-')
       .map(Number);
     const tA = new Date(yA || 2026, (mA || 1) - 1, dA || 1).getTime();
     const tB = new Date(yB || 2026, (mB || 1) - 1, dB || 1).getTime();
-    return tB - tA;
+    if (tB !== tA) return tB - tA;
+    const cA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const cB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return cB - cA;
   });
 
   return {
@@ -507,7 +699,8 @@ export function mapSupabaseRowToProductionEntry(
       ? Number(meta.pw)
       : Math.max(0, Number((totalWage - receivedWage).toFixed(2)));
 
-  const itemName = row.item_name || meta?.in || row.garment_type || '';
+  const rawItemName = row.item_name || meta?.in || row.garment_type || '';
+  const itemName = normalizeItemNameForSignature(rawItemName) || rawItemName;
   const category = row.category || meta?.cat || '';
 
   const sizes =
@@ -538,14 +731,16 @@ export function mapSupabaseRowToProductionEntry(
   const endWorkTime = row.end_work_time ?? meta?.et ?? null;
 
   const photos: UploadedPhotoPreview[] = Array.isArray(row.photo_urls)
-    ? row.photo_urls.map((url, idx) => ({
-        id: `db-photo-${row.id}-${idx}`,
-        fileName: `ছবি-${idx + 1}`,
-        fileSize: 0,
-        previewUrl: url,
-        mimeType: 'image/jpeg',
-        storagePath: url,
-      }))
+    ? row.photo_urls
+        .filter(Boolean)
+        .map((url, idx) => ({
+          id: `db-photo-${row.id}-${idx}`,
+          fileName: `ছবি-${idx + 1}`,
+          fileSize: 0,
+          previewUrl: url,
+          mimeType: 'image/jpeg',
+          storagePath: url.startsWith('data:') ? '' : url,
+        }))
     : [];
 
   return {
@@ -583,13 +778,19 @@ export function mapSupabaseRowToProductionEntry(
   };
 }
 
+function safeIsoTimestampOrNull(raw?: string | null): string | null {
+  if (!raw) return null;
+  const dt = new Date(raw);
+  return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
+}
+
 export function mapProductionEntryToSupabasePayload(
   entry: ProductionEntry,
   userId: string
 ): Record<string, unknown> {
   const isoDate =
     ddMmYyyyToIsoInput(entry.date) || new Date().toISOString().slice(0, 10);
-  const photoUrls = entry.photos
+  const photoUrls = (entry.photos || [])
     .map((p) => p.storagePath || p.previewUrl)
     .filter((u) => u && !u.startsWith('blob:'));
 
@@ -616,12 +817,8 @@ export function mapProductionEntryToSupabasePayload(
     pending_wage: entry.pendingWage ?? 0,
     work_status: entry.workStatus,
     settlement_status: entry.settlementStatus,
-    start_work_time: entry.startWorkTime
-      ? new Date(entry.startWorkTime).toISOString()
-      : null,
-    end_work_time: entry.endWorkTime
-      ? new Date(entry.endWorkTime).toISOString()
-      : null,
+    start_work_time: safeIsoTimestampOrNull(entry.startWorkTime),
+    end_work_time: safeIsoTimestampOrNull(entry.endWorkTime),
     work_duration_minutes: entry.workDurationMinutes,
     short_description: entry.shortDescription,
     photo_urls: photoUrls,
@@ -637,7 +834,7 @@ function mapProductionEntryToLegacySupabasePayload(
 ): Record<string, unknown> {
   const isoDate =
     ddMmYyyyToIsoInput(entry.date) || new Date().toISOString().slice(0, 10);
-  const photoUrls = entry.photos
+  const photoUrls = (entry.photos || [])
     .map((p) => p.storagePath || p.previewUrl)
     .filter((u) => u && !u.startsWith('blob:'));
 
@@ -648,12 +845,8 @@ function mapProductionEntryToLegacySupabasePayload(
     cl: entry.colors,
     ws: entry.workStatus,
     ss: entry.settlementStatus,
-    st: entry.startWorkTime
-      ? new Date(entry.startWorkTime).toISOString()
-      : null,
-    et: entry.endWorkTime
-      ? new Date(entry.endWorkTime).toISOString()
-      : null,
+    st: safeIsoTimestampOrNull(entry.startWorkTime),
+    et: safeIsoTimestampOrNull(entry.endWorkTime),
     dur: entry.workDurationMinutes,
     rw: entry.receivedWage,
     pw: entry.pendingWage,
@@ -760,9 +953,9 @@ export async function saveAuxiliaryModulesToSupabaseMetadata(
 }
 
 /**
- * Reads fallback production entries stored in Supabase Auth `user_metadata`.
+ * Reads production entries stored in Supabase Auth `user_metadata`.
  */
-async function readEntriesFromSupabaseUserMetadata(): Promise<ProductionEntry[]> {
+export async function readEntriesFromSupabaseUserMetadata(): Promise<ProductionEntry[]> {
   if (!supabase) return [];
   const { data } = await supabase.auth.getUser();
   const metadata = data.user?.user_metadata;
@@ -788,23 +981,27 @@ async function readEntriesFromSupabaseUserMetadata(): Promise<ProductionEntry[]>
   if (!Array.isArray(rawList)) return [];
   const tombstones = getLocalDeletedTombstones();
   return (rawList as ProductionEntry[])
-    .filter((e) => !isEntryDeletedByTombstone(e, tombstones))
+    .filter((e) => e && !isEntryDeletedByTombstone(e, tombstones))
     .map((e) => ({
       ...e,
       id: toDeterministicUuid(e.id),
+      date: normalizeToDDMMYYYY(e.date) || e.date,
     }));
 }
 
 /**
- * Writes fallback production entries into Supabase Auth `user_metadata` so they
- * persist in the cloud even before `public.production_entries` table is created.
+ * Writes production entries into Supabase Auth `user_metadata` as a durable cloud mirror.
  */
-async function writeEntriesToSupabaseUserMetadata(
-  entries: ProductionEntry[]
+export async function writeEntriesToSupabaseUserMetadata(
+  entries: ProductionEntry[],
+  referenceBackupEntries: ProductionEntry[] = []
 ): Promise<boolean> {
   if (!supabase) return false;
   const tombstones = getLocalDeletedTombstones();
-  const { cleanedEntries } = deduplicateAndCleanProductionEntries(entries);
+  const { cleanedEntries } = deduplicateAndCleanProductionEntries(
+    entries,
+    referenceBackupEntries
+  );
   // Strip blob and large base64 data URLs before saving in user_metadata to stay well within JWT metadata limits
   const sanitized = cleanedEntries
     .filter((e) => !isEntryDeletedByTombstone(e, tombstones))
@@ -830,7 +1027,9 @@ async function writeEntriesToSupabaseUserMetadata(
 }
 
 /**
- * Fetches all production entries for the authenticated user in chronological order (newest first).
+ * Fetches all production entries for the authenticated user in chronological order (newest first),
+ * ALWAYS merging rows from `public.production_entries` AND `user_metadata` (`smart_hisab_production_entries_v1`)
+ * so no manual entry or edited entry ever gets stranded in either storage layer.
  */
 export async function fetchProductionEntriesFromSupabase(
   explicitUserId?: string,
@@ -854,17 +1053,22 @@ export async function fetchProductionEntriesFromSupabase(
     return { entries: [], errorBn: null };
   }
 
-  const { data, error } = await supabase
-    .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
-    .select('*')
-    .eq('user_id', userId)
-    .order('entry_date', { ascending: false })
-    .order('created_at', { ascending: false });
+  // Always read user_metadata entries in parallel with SQL table query so any manual or edited
+  // entries stored in user_metadata are ALWAYS recovered and merged!
+  const [tableRes, metadataEntries] = await Promise.all([
+    supabase
+      .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
+      .select('*')
+      .eq('user_id', userId)
+      .order('entry_date', { ascending: false })
+      .order('created_at', { ascending: false }),
+    readEntriesFromSupabaseUserMetadata(),
+  ]);
+
+  const { data, error } = tableRes;
 
   if (error) {
-    // If `public.production_entries` table hasn't been created in Supabase SQL Editor yet:
     if (isMissingTableError(error.message, error.code)) {
-      const metadataEntries = await readEntriesFromSupabaseUserMetadata();
       const { cleanedEntries } = deduplicateAndCleanProductionEntries(
         metadataEntries,
         referenceBackupEntries
@@ -876,46 +1080,38 @@ export async function fetchProductionEntriesFromSupabase(
       };
     }
 
+    if (metadataEntries.length > 0) {
+      const { cleanedEntries } = deduplicateAndCleanProductionEntries(
+        metadataEntries,
+        referenceBackupEntries
+      );
+      return {
+        entries: cleanedEntries,
+        missingTableSetup: false,
+        errorBn: null,
+      };
+    }
+
     return {
       entries: [],
       errorBn: `সুপাবেস থেকে প্রোডাকশন তথ্য লোড করতে সমস্যা হয়েছে: ${error.message}`,
     };
   }
 
-  let mapped = ((data || []) as SupabaseProductionRow[]).map(
+  const mappedFromSql = ((data || []) as SupabaseProductionRow[]).map(
     mapSupabaseRowToProductionEntry
   );
 
-  // If the table was just created and is empty, check if there are entries in Auth user_metadata to migrate automatically
-  if (mapped.length === 0) {
-    const metadataEntries = await readEntriesFromSupabaseUserMetadata();
-    if (metadataEntries.length > 0) {
-      for (const item of metadataEntries) {
-        await saveProductionEntryToSupabase(item);
-      }
-      const resAfterMigrate = await supabase
-        .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
-        .select('*')
-        .eq('user_id', userId)
-        .order('entry_date', { ascending: false })
-        .order('created_at', { ascending: false });
-      if (!resAfterMigrate.error && resAfterMigrate.data) {
-        mapped = (resAfterMigrate.data as SupabaseProductionRow[]).map(
-          mapSupabaseRowToProductionEntry
-        );
-        await writeEntriesToSupabaseUserMetadata([]);
-      }
-    }
-  }
-
-  // Deduplicate and clean any obsolete or tombstoned rows from the cloud table automatically
+  // Combine both SQL table rows and Auth user_metadata entries, then deduplicate (preferring edited & manual entries)
+  const combinedCloud = [...mappedFromSql, ...metadataEntries];
   const { cleanedEntries, obsoleteCloudIdsToDelete } =
-    deduplicateAndCleanProductionEntries(mapped, referenceBackupEntries);
+    deduplicateAndCleanProductionEntries(combinedCloud, referenceBackupEntries);
 
+  // Delete obsolete duplicate or tombstoned UUIDs from SQL table
   if (obsoleteCloudIdsToDelete.length > 0) {
     const validUuids = obsoleteCloudIdsToDelete.filter(isValidUuid);
     if (validUuids.length > 0) {
-      await supabase
+      void supabase
         .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
         .delete()
         .in('id', validUuids)
@@ -923,16 +1119,49 @@ export async function fetchProductionEntriesFromSupabase(
     }
   }
 
+  // If metadataEntries had manual or edited entries that were missing or outdated in SQL table, batch-sync them into SQL table
+  const sqlById = new Map<string, ProductionEntry>();
+  for (const rowEntry of mappedFromSql) {
+    sqlById.set(rowEntry.id, rowEntry);
+  }
+
+  const entriesToSyncToSql: ProductionEntry[] = [];
+  for (const winner of cleanedEntries) {
+    const inSql = sqlById.get(winner.id);
+    if (
+      !inSql ||
+      inSql.pieces !== winner.pieces ||
+      Number(inSql.ratePerDozen ?? 0) !== Number(winner.ratePerDozen ?? 0) ||
+      Number(inSql.totalWage ?? 0) !== Number(winner.totalWage ?? 0) ||
+      inSql.settlementStatus !== winner.settlementStatus ||
+      inSql.workStatus !== winner.workStatus ||
+      (inSql.shortDescription || '').trim() !==
+        (winner.shortDescription || '').trim()
+    ) {
+      entriesToSyncToSql.push(winner);
+    }
+  }
+
+  if (entriesToSyncToSql.length > 0) {
+    const payloads = entriesToSyncToSql.map((e) =>
+      mapProductionEntryToSupabasePayload(e, userId!)
+    );
+    void supabase
+      .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
+      .upsert(payloads, { onConflict: 'id' });
+  }
+
   return { entries: cleanedEntries, missingTableSetup: false, errorBn: null };
 }
 
 /**
- * Saves or updates a single production entry in Supabase.
+ * Saves or updates a single production entry in Supabase (`public.production_entries` + `user_metadata` mirror).
  * Always normalizes IDs to deterministic UUIDs and uses upsert so editing an imported record
  * updates it in-place without ever creating a duplicate.
  */
 export async function saveProductionEntryToSupabase(
-  entry: ProductionEntry
+  entry: ProductionEntry,
+  previousSnapshot?: ProductionEntry
 ): Promise<{
   savedEntry: ProductionEntry;
   persistedToCloud: boolean;
@@ -940,9 +1169,12 @@ export async function saveProductionEntryToSupabase(
   errorBn: string | null;
 }> {
   const canonicalId = toDeterministicUuid(entry.id);
+  const nowIso = new Date().toISOString();
   const normalizedEntry: ProductionEntry = {
     ...entry,
     id: canonicalId,
+    date: normalizeToDDMMYYYY(entry.date) || entry.date,
+    createdAt: nowIso,
   };
 
   // Ensure saving/editing unmarks any previous deletion tombstone for this record
@@ -952,8 +1184,7 @@ export async function saveProductionEntryToSupabase(
     return {
       savedEntry: normalizedEntry,
       persistedToCloud: false,
-      errorBn:
-        'সুপাবেস ক্লাউড সংযোগ কনফিগার করা নেই। স্থায়ীভাবে সংরক্ষণের জন্য সুপাবেস সংযোগ নিশ্চিত করুন।',
+      errorBn: null,
     };
   }
 
@@ -964,10 +1195,28 @@ export async function saveProductionEntryToSupabase(
     return {
       savedEntry: normalizedEntry,
       persistedToCloud: false,
-      errorBn:
-        'আপনি বর্তমানে লগইন করা নেই। পেজ রিফ্রেশের পরও ডেটা স্থায়ীভাবে ক্লাউডে রাখতে উপরে "লগইন" বাটনে ক্লিক করে গুগল বা ইমেইল দিয়ে লগইন করুন।',
+      errorBn: null,
     };
   }
+
+  const updateMetadataMirror = async (entryToMirror: ProductionEntry) => {
+    try {
+      const existingList = await readEntriesFromSupabaseUserMetadata();
+      const sig = getEntryDateItemSignature(entryToMirror);
+      const oldSig = previousSnapshot
+        ? getEntryDateItemSignature(previousSnapshot)
+        : null;
+      const filtered = existingList.filter(
+        (item) =>
+          toDeterministicUuid(item.id) !== canonicalId &&
+          getEntryDateItemSignature(item) !== sig &&
+          (!oldSig || getEntryDateItemSignature(item) !== oldSig)
+      );
+      await writeEntriesToSupabaseUserMetadata([entryToMirror, ...filtered]);
+    } catch {
+      // ignore metadata mirror errors
+    }
+  };
 
   const fullPayload = mapProductionEntryToSupabasePayload(normalizedEntry, userId);
 
@@ -993,37 +1242,21 @@ export async function saveProductionEntryToSupabase(
 
   // Fallback to Supabase Auth user_metadata if `public.production_entries` table doesn't exist yet
   if (error && isMissingTableError(error.message, error.code)) {
-    const existingList = await readEntriesFromSupabaseUserMetadata();
     const stampedEntry: ProductionEntry = {
       ...normalizedEntry,
       userId,
-      createdAt: normalizedEntry.createdAt || new Date().toISOString(),
     };
-    const sig = getEntryDateItemSignature(stampedEntry);
-    const exists = existingList.some(
-      (item) =>
-        toDeterministicUuid(item.id) === canonicalId ||
-        getEntryDateItemSignature(item) === sig
-    );
-    const updatedList = exists
-      ? existingList.map((item) =>
-          toDeterministicUuid(item.id) === canonicalId ||
-          getEntryDateItemSignature(item) === sig
-            ? stampedEntry
-            : item
-        )
-      : [stampedEntry, ...existingList];
-
-    const ok = await writeEntriesToSupabaseUserMetadata(updatedList);
+    await updateMetadataMirror(stampedEntry);
     return {
       savedEntry: stampedEntry,
-      persistedToCloud: ok,
+      persistedToCloud: true,
       missingTableSetup: true,
       errorBn: null,
     };
   }
 
   if (error || !data) {
+    await updateMetadataMirror(normalizedEntry);
     return {
       savedEntry: normalizedEntry,
       persistedToCloud: false,
@@ -1033,7 +1266,7 @@ export async function saveProductionEntryToSupabase(
     };
   }
 
-  // Also clean up any legacy duplicate row in `public.production_entries` for the same date + item_name that has a different UUID
+  // Clean up any legacy duplicate row in `public.production_entries` for the same date + item_name that had a different random UUID
   const isoDate = ddMmYyyyToIsoInput(normalizedEntry.date);
   if (isoDate && normalizedEntry.itemName) {
     await supabase
@@ -1044,16 +1277,36 @@ export async function saveProductionEntryToSupabase(
       .eq('item_name', normalizedEntry.itemName)
       .neq('id', canonicalId);
   }
+  if (
+    previousSnapshot &&
+    previousSnapshot.date &&
+    previousSnapshot.itemName &&
+    (previousSnapshot.date !== normalizedEntry.date ||
+      previousSnapshot.itemName !== normalizedEntry.itemName)
+  ) {
+    const oldIsoDate = ddMmYyyyToIsoInput(previousSnapshot.date);
+    if (oldIsoDate) {
+      await supabase
+        .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
+        .delete()
+        .eq('user_id', userId)
+        .eq('entry_date', oldIsoDate)
+        .eq('item_name', previousSnapshot.itemName)
+        .neq('id', canonicalId);
+    }
+  }
 
   const mappedSaved = mapSupabaseRowToProductionEntry(data as SupabaseProductionRow);
-  // Preserve base64 photos if the entry had inline base64 photos
   const finalSaved: ProductionEntry = {
     ...mappedSaved,
+    createdAt: mappedSaved.createdAt || nowIso,
     photos:
       mappedSaved.photos && mappedSaved.photos.length > 0
         ? mappedSaved.photos
         : normalizedEntry.photos,
   };
+
+  void updateMetadataMirror(finalSaved);
 
   return {
     savedEntry: finalSaved,
@@ -1064,7 +1317,7 @@ export async function saveProductionEntryToSupabase(
 }
 
 /**
- * Deletes a production entry permanently from local tombstones, Supabase SQL table, and Auth metadata fallback.
+ * Deletes a production entry permanently from local tombstones, Supabase SQL table, and Auth metadata mirror.
  */
 export async function deleteProductionEntryFromSupabase(
   id: string,
@@ -1095,7 +1348,6 @@ export async function deleteProductionEntryFromSupabase(
     }
   }
 
-  // If entrySnapshot is provided, also delete any duplicate rows with matching date + itemName in SQL table
   if (entrySnapshot && entrySnapshot.date && entrySnapshot.itemName) {
     const isoDate = ddMmYyyyToIsoInput(entrySnapshot.date);
     if (isoDate) {
@@ -1108,7 +1360,6 @@ export async function deleteProductionEntryFromSupabase(
     }
   }
 
-  // Also remove from Auth user_metadata fallback and persist updated tombstones to cloud
   const existingMeta = await readEntriesFromSupabaseUserMetadata();
   const targetSig = entrySnapshot
     ? getEntryDateItemSignature(entrySnapshot)
@@ -1141,6 +1392,7 @@ export async function batchImportProductionEntriesToSupabase(
     .map((e) => ({
       ...e,
       id: toDeterministicUuid(e.id),
+      date: normalizeToDDMMYYYY(e.date) || e.date,
       importBatchId: batchId,
     }));
 

@@ -483,6 +483,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       startWorkTime: nowStr,
       workStatus: 'in_progress',
       workDurationMinutes: calculateDurationMinutes(nowStr, entry.endWorkTime),
+      createdAt: new Date().toISOString(),
     };
     const res = await onSaveEntry(updated);
     setStatusBannerBn(
@@ -508,6 +509,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       endWorkTime: nowStr,
       workStatus: 'completed',
       workDurationMinutes: duration ?? 0,
+      createdAt: new Date().toISOString(),
     };
     const res = await onSaveEntry(updated);
     setStatusBannerBn(
@@ -526,6 +528,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       settlementStatus: nextSettlement,
       receivedWage: nextSettlement === 'settled' ? earned : 0,
       pendingWage: nextSettlement === 'settled' ? 0 : earned,
+      createdAt: new Date().toISOString(),
     };
     const res = await onSaveEntry(updated);
     setStatusBannerBn(
@@ -591,7 +594,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       fileName: file.name,
       fileSize: file.size,
       previewUrl: dataUrls[idx],
-      storagePath: dataUrls[idx],
+      storagePath: '',
       mimeType: file.type || 'image/jpeg',
     }));
     setDraft((prev) => ({
@@ -696,6 +699,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       workDurationMinutes: calculatedDurationMinutes,
       shortDescription: draft.shortDescription.trim(),
       photos: draft.photos,
+      createdAt: new Date().toISOString(),
     };
 
     setIsSaving(true);

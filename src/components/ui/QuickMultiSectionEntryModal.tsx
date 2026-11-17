@@ -405,6 +405,9 @@ export const QuickMultiSectionEntryModal: React.FC<
       const rate = prodRatePerDozen ? Number(prodRatePerDozen) : 0;
       const totalWage = Number(((pcs / 12) * rate).toFixed(2));
 
+      const finalSettlement: SettlementStatus =
+        rate > 0 ? prodSettlementStatus : 'pending';
+
       setIsSaving(true);
       try {
         await onSaveProduction({
@@ -421,17 +424,17 @@ export const QuickMultiSectionEntryModal: React.FC<
           dozens: Number((pcs / 12).toFixed(2)),
           ratePerDozen: rate,
           totalWage,
-          receivedWage: 0,
-          pendingWage: totalWage,
+          receivedWage: finalSettlement === 'settled' ? totalWage : 0,
+          pendingWage: finalSettlement === 'settled' ? 0 : totalWage,
           workStatus: prodWorkStatus,
-          settlementStatus:
-            rate > 0 ? prodSettlementStatus : 'pending',
+          settlementStatus: finalSettlement,
           startWorkTime: null,
           endWorkTime: null,
           workDurationMinutes: null,
           shortDescription:
             prodNotes.trim() || `${prodItemName.trim()} (${pcs} পিস)`,
           photos: [],
+          createdAt: new Date().toISOString(),
         });
         setSuccessMsg('প্রোডাকশন এন্ট্রি সংরক্ষিত হয়েছে!');
         setTimeout(onClose, 700);

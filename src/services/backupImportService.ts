@@ -150,6 +150,98 @@ function extractWorkTimingFromNote(
 }
 
 /**
+ * Rebuilds monthly WageLedgerRecord summaries dynamically from production entries and payment withdrawals.
+ */
+export function buildWageRecordsFromProductionAndWithdrawals(
+  productionEntries: ProductionEntry[],
+  paymentWithdrawals: PaymentWithdrawalRecord[]
+): WageLedgerRecord[] {
+  const monthlyMap = new Map<
+    string,
+    {
+      year: number;
+      month: number;
+      pieces: number;
+      dozens: number;
+      earned: number;
+      paid: number;
+      startDate: string;
+      endDate: string;
+    }
+  >();
+
+  productionEntries.forEach((p) => {
+    const [, m, y] = toAsciiDigits(p.date).split('-').map(Number);
+    if (!y || !m) return;
+    const key = `${y}-${String(m).padStart(2, '0')}`;
+    const existing = monthlyMap.get(key) || {
+      year: y,
+      month: m,
+      pieces: 0,
+      dozens: 0,
+      earned: 0,
+      paid: 0,
+      startDate: `01-${String(m).padStart(2, '0')}-${y}`,
+      endDate: `${new Date(y, m, 0).getDate()}-${String(m).padStart(2, '0')}-${y}`,
+    };
+    existing.pieces += p.pieces ?? 0;
+    existing.dozens = Number(
+      (existing.dozens + (p.dozens ?? 0)).toFixed(2)
+    );
+    existing.earned = Number(
+      (existing.earned + (p.totalWage ?? 0)).toFixed(2)
+    );
+    monthlyMap.set(key, existing);
+  });
+
+  paymentWithdrawals.forEach((w) => {
+    const [, m, y] = toAsciiDigits(w.date).split('-').map(Number);
+    if (!y || !m) return;
+    const key = `${y}-${String(m).padStart(2, '0')}`;
+    const existing = monthlyMap.get(key) || {
+      year: y,
+      month: m,
+      pieces: 0,
+      dozens: 0,
+      earned: 0,
+      paid: 0,
+      startDate: `01-${String(m).padStart(2, '0')}-${y}`,
+      endDate: `${new Date(y, m, 0).getDate()}-${String(m).padStart(2, '0')}-${y}`,
+    };
+    existing.paid = Number((existing.paid + (w.amount ?? 0)).toFixed(2));
+    monthlyMap.set(key, existing);
+  });
+
+  return Array.from(monthlyMap.entries())
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([key, item]) => {
+      const monthNameBn =
+        BENGALI_MONTH_NAMES[(item.month - 1) % 12] || 'মাস';
+      const outstanding = Number(
+        Math.max(0, item.earned - item.paid).toFixed(2)
+      );
+      return {
+        id: `wage-${key}`,
+        periodLabel: `${monthNameBn} ${toBengaliDigits(item.year)}`,
+        startDate: item.startDate,
+        endDate: item.endDate,
+        lineNumber: 'মূল প্রোডাকশন লাইন',
+        totalDozens: item.dozens,
+        totalPieces: item.pieces,
+        earnedWage: item.earned,
+        paidWage: item.paid,
+        outstandingWage: outstanding,
+        statusLabel:
+          outstanding <= 0
+            ? 'নিষ্পত্তি হয়েছে'
+            : item.paid > 0
+            ? 'আংশিক নিষ্পত্তি'
+            : 'রেট নিষ্পত্তি হয়নি',
+      };
+    });
+}
+
+/**
  * Converts a raw SmartHisab JSON backup object (or multi-sheet Excel data converted to this shape)
  * into the full ApplicationRepositoryState across all modules.
  */
@@ -244,7 +336,7 @@ export function parseSmartHisabBackupData(raw: RawSmartHisabBackupJson): {
         fileSize: base64Img.length,
         previewUrl: base64Img,
         mimeType: 'image/jpeg',
-        storagePath: base64Img,
+        storagePath: '',
       });
     } else if (imgUrl && imgUrl.startsWith('http')) {
       photos.push({
@@ -302,89 +394,10 @@ export function parseSmartHisabBackupData(raw: RawSmartHisabBackupJson): {
   const sortedWithdrawals = sortByDateDesc(paymentWithdrawals);
 
   // 2. Build Monthly Wage Ledger Records from Production & Withdrawals
-  const monthlyMap = new Map<
-    string,
-    {
-      year: number;
-      month: number;
-      pieces: number;
-      dozens: number;
-      earned: number;
-      paid: number;
-      startDate: string;
-      endDate: string;
-    }
-  >();
-
-  sortedProduction.forEach((p) => {
-    const [d, m, y] = toAsciiDigits(p.date).split('-').map(Number);
-    if (!y || !m) return;
-    const key = `${y}-${String(m).padStart(2, '0')}`;
-    const existing = monthlyMap.get(key) || {
-      year: y,
-      month: m,
-      pieces: 0,
-      dozens: 0,
-      earned: 0,
-      paid: 0,
-      startDate: `01-${String(m).padStart(2, '0')}-${y}`,
-      endDate: `${new Date(y, m, 0).getDate()}-${String(m).padStart(2, '0')}-${y}`,
-    };
-    existing.pieces += p.pieces ?? 0;
-    existing.dozens = Number(
-      (existing.dozens + (p.dozens ?? 0)).toFixed(2)
-    );
-    existing.earned = Number(
-      (existing.earned + (p.totalWage ?? 0)).toFixed(2)
-    );
-    monthlyMap.set(key, existing);
-  });
-
-  sortedWithdrawals.forEach((w) => {
-    const [d, m, y] = toAsciiDigits(w.date).split('-').map(Number);
-    if (!y || !m) return;
-    const key = `${y}-${String(m).padStart(2, '0')}`;
-    const existing = monthlyMap.get(key) || {
-      year: y,
-      month: m,
-      pieces: 0,
-      dozens: 0,
-      earned: 0,
-      paid: 0,
-      startDate: `01-${String(m).padStart(2, '0')}-${y}`,
-      endDate: `${new Date(y, m, 0).getDate()}-${String(m).padStart(2, '0')}-${y}`,
-    };
-    existing.paid = Number((existing.paid + (w.amount ?? 0)).toFixed(2));
-    monthlyMap.set(key, existing);
-  });
-
-  const wageRecords: WageLedgerRecord[] = Array.from(monthlyMap.entries())
-    .sort((a, b) => b[0].localeCompare(a[0]))
-    .map(([key, item]) => {
-      const monthNameBn =
-        BENGALI_MONTH_NAMES[(item.month - 1) % 12] || 'মাস';
-      const outstanding = Number(
-        Math.max(0, item.earned - item.paid).toFixed(2)
-      );
-      return {
-        id: `wage-${key}`,
-        periodLabel: `${monthNameBn} ${toBengaliDigits(item.year)}`,
-        startDate: item.startDate,
-        endDate: item.endDate,
-        lineNumber: 'মূল প্রোডাকশন লাইন',
-        totalDozens: item.dozens,
-        totalPieces: item.pieces,
-        earnedWage: item.earned,
-        paidWage: item.paid,
-        outstandingWage: outstanding,
-        statusLabel:
-          outstanding <= 0
-            ? 'নিষ্পত্তি হয়েছে'
-            : item.paid > 0
-            ? 'আংশিক নিষ্পত্তি'
-            : 'রেট নিষ্পত্তি হয়নি',
-      };
-    });
+  const wageRecords = buildWageRecordsFromProductionAndWithdrawals(
+    sortedProduction,
+    sortedWithdrawals
+  );
 
   // 3. Parse "expense" & "income" arrays
   const rawExpenses = Array.isArray(raw.expense) ? raw.expense : [];
