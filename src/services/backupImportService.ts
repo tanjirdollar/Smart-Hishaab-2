@@ -20,6 +20,10 @@ import {
 } from '../utils/formatters';
 import { BENGALI_MONTH_NAMES } from '../utils/weeklyCalendar';
 import { ApplicationRepositoryState } from './financialDomainService';
+import {
+  isEntryDeletedByTombstone,
+  toDeterministicUuid,
+} from './supabaseDataService';
 
 export interface RawSmartHisabBackupJson {
   income?: Record<string, unknown>[];
@@ -166,6 +170,7 @@ export function parseSmartHisabBackupData(raw: RawSmartHisabBackupJson): {
     const rawDateStr = String(row.Date || row.date || '').trim();
     const dateDDMMYYYY = normalizeToDDMMYYYY(rawDateStr) || rawDateStr;
     const rawId = String(row.ID || row.id || `prod-bkp-${idx + 1}`).trim();
+    const canonicalUuid = toDeterministicUuid(rawId);
     const workName = String(
       row['Work Name'] || row.Work_Name || row.itemName || ''
     ).trim();
@@ -252,8 +257,8 @@ export function parseSmartHisabBackupData(raw: RawSmartHisabBackupJson): {
       });
     }
 
-    productionEntries.push({
-      id: rawId,
+    const candidateEntry: ProductionEntry = {
+      id: canonicalUuid,
       date: dateDDMMYYYY,
       itemName: workName || category,
       category,
@@ -275,7 +280,11 @@ export function parseSmartHisabBackupData(raw: RawSmartHisabBackupJson): {
       workDurationMinutes: null,
       shortDescription: cleanNote,
       photos,
-    });
+    };
+
+    if (!isEntryDeletedByTombstone(candidateEntry)) {
+      productionEntries.push(candidateEntry);
+    }
   });
 
   // Sort productionEntries and paymentWithdrawals newest first

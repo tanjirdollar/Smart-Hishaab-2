@@ -35,6 +35,308 @@ import {
 
 const AUTH_METADATA_ENTRIES_KEY = 'smart_hisab_production_entries_v1';
 const AUTH_METADATA_AUXILIARY_KEY = 'smart_hisab_auxiliary_modules_v1';
+const AUTH_METADATA_TOMBSTONES_KEY = 'smart_hisab_deleted_tombstones_v2';
+const LOCAL_DELETED_TOMBSTONES_KEY = 'smart_hisab_deleted_tombstones_v2';
+
+export interface DeletedTombstones {
+  ids: string[];
+  signatures: string[];
+}
+
+export function isValidUuid(id: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    String(id || '').trim()
+  );
+}
+
+/**
+ * Converts any legacy or backup ID (such as "TRX-178749989806673", "prod-bkp-1", "1")
+ * into a canonical, deterministic UUID v4 string so Supabase always upserts/deletes in place.
+ */
+export function toDeterministicUuid(rawId: string): string {
+  const clean = String(rawId || '').trim();
+  if (!clean) {
+    return '00000000-0000-4000-8000-000000000000';
+  }
+  if (isValidUuid(clean)) {
+    return clean.toLowerCase();
+  }
+
+  const hash32 = (str: string, seed: number): number => {
+    let h = (0x811c9dc5 ^ seed) >>> 0;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    h ^= h >>> 16;
+    h = Math.imul(h, 0x85ebca6b) >>> 0;
+    h ^= h >>> 13;
+    h = Math.imul(h, 0xc2b2ae35) >>> 0;
+    h ^= h >>> 16;
+    return h >>> 0;
+  };
+
+  const h1 = hash32(clean, 0x11111111).toString(16).padStart(8, '0');
+  const h2 = hash32(clean, 0x22222222).toString(16).padStart(8, '0');
+  const h3 = hash32(clean, 0x33333333).toString(16).padStart(8, '0');
+  const h4 = hash32(clean, 0x44444444).toString(16).padStart(8, '0');
+
+  const p1 = h1;
+  const p2 = h2.slice(0, 4);
+  const p3 = '4' + h2.slice(5, 8);
+  const variantNibble = ((parseInt(h3[0], 16) & 0x3) | 0x8).toString(16);
+  const p4 = variantNibble + h3.slice(1, 4);
+  const p5 = h3.slice(4, 8) + h4;
+
+  return `${p1}-${p2}-${p3}-${p4}-${p5}`.toLowerCase();
+}
+
+export function getEntryDateItemSignature(
+  entry: Pick<ProductionEntry, 'date' | 'itemName'>
+): string {
+  return `${String(entry.date || '').trim()}|${String(entry.itemName || '').trim()}`;
+}
+
+export function getLocalDeletedTombstones(): DeletedTombstones {
+  if (typeof window === 'undefined') {
+    return { ids: [], signatures: [] };
+  }
+  try {
+    const raw = localStorage.getItem(LOCAL_DELETED_TOMBSTONES_KEY);
+    if (!raw) return { ids: [], signatures: [] };
+    const parsed = JSON.parse(raw) as Partial<DeletedTombstones>;
+    return {
+      ids: Array.isArray(parsed?.ids) ? parsed.ids : [],
+      signatures: Array.isArray(parsed?.signatures) ? parsed.signatures : [],
+    };
+  } catch {
+    return { ids: [], signatures: [] };
+  }
+}
+
+export function saveLocalDeletedTombstones(tombstones: DeletedTombstones): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const deduped: DeletedTombstones = {
+      ids: Array.from(new Set(tombstones.ids.filter(Boolean))),
+      signatures: Array.from(new Set(tombstones.signatures.filter(Boolean))),
+    };
+    localStorage.setItem(LOCAL_DELETED_TOMBSTONES_KEY, JSON.stringify(deduped));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function markEntryDeletedInTombstones(
+  entryOrId: string | ProductionEntry
+): DeletedTombstones {
+  const current = getLocalDeletedTombstones();
+  const rawId = typeof entryOrId === 'string' ? entryOrId : entryOrId.id;
+  const uuid = toDeterministicUuid(rawId);
+  const nextIds = new Set([...current.ids, rawId, uuid]);
+  const nextSigs = new Set(current.signatures);
+
+  if (typeof entryOrId !== 'string' && entryOrId.date && entryOrId.itemName) {
+    nextSigs.add(getEntryDateItemSignature(entryOrId));
+  }
+
+  const updated: DeletedTombstones = {
+    ids: Array.from(nextIds),
+    signatures: Array.from(nextSigs),
+  };
+  saveLocalDeletedTombstones(updated);
+  return updated;
+}
+
+export function unmarkEntryDeletedInTombstones(
+  entry: ProductionEntry
+): DeletedTombstones {
+  const current = getLocalDeletedTombstones();
+  const rawId = entry.id;
+  const uuid = toDeterministicUuid(rawId);
+  const sig = getEntryDateItemSignature(entry);
+
+  const updated: DeletedTombstones = {
+    ids: current.ids.filter((id) => id !== rawId && id !== uuid),
+    signatures: current.signatures.filter((s) => s !== sig),
+  };
+  saveLocalDeletedTombstones(updated);
+  return updated;
+}
+
+export function isEntryDeletedByTombstone(
+  entry: ProductionEntry,
+  explicitTombstones?: DeletedTombstones
+): boolean {
+  const tombstones = explicitTombstones || getLocalDeletedTombstones();
+  const uuid = toDeterministicUuid(entry.id);
+  if (tombstones.ids.includes(entry.id) || tombstones.ids.includes(uuid)) {
+    return true;
+  }
+  const sig = getEntryDateItemSignature(entry);
+  if (sig !== '|' && tombstones.signatures.includes(sig)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Deduplicates production entries and removes any resurrected/deleted records or
+ * unedited backup duplicates when an imported record was modified by the user.
+ */
+export function deduplicateAndCleanProductionEntries(
+  entries: ProductionEntry[],
+  referenceBackupEntries: ProductionEntry[] = []
+): {
+  cleanedEntries: ProductionEntry[];
+  obsoleteCloudIdsToDelete: string[];
+} {
+  const tombstones = getLocalDeletedTombstones();
+  const obsoleteIds = new Set<string>();
+
+  // Build lookup maps from the reference backup (if available)
+  const backupBySig = new Map<string, ProductionEntry>();
+  const backupPhotosBySig = new Map<string, UploadedPhotoPreview[]>();
+  const backupPhotosByUuid = new Map<string, UploadedPhotoPreview[]>();
+
+  for (const bkp of referenceBackupEntries) {
+    const sig = getEntryDateItemSignature(bkp);
+    const bkpUuid = toDeterministicUuid(bkp.id);
+    backupBySig.set(sig, bkp);
+    if (bkp.photos && bkp.photos.length > 0) {
+      backupPhotosBySig.set(sig, bkp.photos);
+      backupPhotosByUuid.set(bkpUuid, bkp.photos);
+    }
+  }
+
+  // Step 1: Filter out tombstoned (deleted) entries and normalize IDs
+  const surviving: ProductionEntry[] = [];
+  for (const item of entries) {
+    if (isEntryDeletedByTombstone(item, tombstones)) {
+      if (isValidUuid(item.id)) obsoleteIds.add(item.id);
+      obsoleteIds.add(toDeterministicUuid(item.id));
+      continue;
+    }
+    const normalizedId = toDeterministicUuid(item.id);
+    const sig = getEntryDateItemSignature(item);
+    const restoredPhotos =
+      item.photos && item.photos.length > 0
+        ? item.photos
+        : backupPhotosByUuid.get(normalizedId) ||
+          backupPhotosBySig.get(sig) ||
+          [];
+
+    surviving.push({
+      ...item,
+      id: normalizedId,
+      photos: restoredPhotos,
+    });
+  }
+
+  // Helper to check if an entry differs from its original raw backup version (meaning user edited it)
+  const isModifiedFromBackup = (entry: ProductionEntry): boolean => {
+    const sig = getEntryDateItemSignature(entry);
+    const bkp = backupBySig.get(sig);
+    if (!bkp) return true; // User-created or itemName was edited
+    return (
+      (entry.pieces ?? 0) !== (bkp.pieces ?? 0) ||
+      Number(entry.ratePerDozen ?? 0) !== Number(bkp.ratePerDozen ?? 0) ||
+      Number(entry.totalWage ?? 0) !== Number(bkp.totalWage ?? 0) ||
+      entry.settlementStatus !== bkp.settlementStatus ||
+      entry.workStatus !== bkp.workStatus ||
+      (entry.shortDescription || '').trim() !== (bkp.shortDescription || '').trim() ||
+      (entry.size || '').trim() !== (bkp.size || '').trim() ||
+      (entry.color || '').trim() !== (bkp.color || '').trim()
+    );
+  };
+
+  // Step 2: Deduplicate by canonical UUID first
+  const byUuid = new Map<string, ProductionEntry>();
+  for (const entry of surviving) {
+    const existing = byUuid.get(entry.id);
+    if (!existing) {
+      byUuid.set(entry.id, entry);
+    } else {
+      // Prefer the entry that was modified from backup
+      const existingModified = isModifiedFromBackup(existing);
+      const currentModified = isModifiedFromBackup(entry);
+      if (currentModified && !existingModified) {
+        byUuid.set(entry.id, {
+          ...entry,
+          photos:
+            entry.photos && entry.photos.length > 0
+              ? entry.photos
+              : existing.photos,
+        });
+      }
+    }
+  }
+
+  // Step 3: Deduplicate pairs that share the same Date + ItemName where one is an old unedited backup copy
+  // and the other is the edited version (created before deterministic UUIDs were enforced)
+  const bySigGroups = new Map<string, ProductionEntry[]>();
+  for (const entry of byUuid.values()) {
+    const sig = getEntryDateItemSignature(entry);
+    const list = bySigGroups.get(sig) || [];
+    list.push(entry);
+    bySigGroups.set(sig, list);
+  }
+
+  const finalEntries: ProductionEntry[] = [];
+  for (const [, group] of bySigGroups.entries()) {
+    if (group.length === 1) {
+      finalEntries.push(group[0]);
+      continue;
+    }
+
+    // Multiple entries share the exact same Date + ItemName:
+    // Sort so that user-modified entries come BEFORE unedited backup clones
+    const sortedGroup = group.slice().sort((a, b) => {
+      const aMod = isModifiedFromBackup(a) ? 1 : 0;
+      const bMod = isModifiedFromBackup(b) ? 1 : 0;
+      if (aMod !== bMod) return bMod - aMod;
+      // Prefer entry with a newer createdAt if both are modified
+      const tA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const tB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return tB - tA;
+    });
+
+    const winner = sortedGroup[0];
+    const fallbackPhoto =
+      sortedGroup.find((g) => g.photos && g.photos.length > 0)?.photos || [];
+    finalEntries.push({
+      ...winner,
+      photos:
+        winner.photos && winner.photos.length > 0
+          ? winner.photos
+          : fallbackPhoto,
+    });
+
+    for (let i = 1; i < sortedGroup.length; i++) {
+      if (sortedGroup[i].id !== winner.id) {
+        obsoleteIds.add(sortedGroup[i].id);
+      }
+    }
+  }
+
+  // Sort newest date first
+  finalEntries.sort((a, b) => {
+    const [dA, mA, yA] = String(a.date || '')
+      .split('-')
+      .map(Number);
+    const [dB, mB, yB] = String(b.date || '')
+      .split('-')
+      .map(Number);
+    const tA = new Date(yA || 2026, (mA || 1) - 1, dA || 1).getTime();
+    const tB = new Date(yB || 2026, (mB || 1) - 1, dB || 1).getTime();
+    return tB - tA;
+  });
+
+  return {
+    cleanedEntries: finalEntries,
+    obsoleteCloudIdsToDelete: Array.from(obsoleteIds),
+  };
+}
 
 export const SUPABASE_SETUP_SQL_SCRIPT = `CREATE TABLE IF NOT EXISTS public.production_entries (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -247,7 +549,7 @@ export function mapSupabaseRowToProductionEntry(
     : [];
 
   return {
-    id: row.id,
+    id: toDeterministicUuid(row.id),
     userId: row.user_id,
     date: isoInputToDDMMYYYY(row.entry_date),
     itemName,
@@ -292,6 +594,7 @@ export function mapProductionEntryToSupabasePayload(
     .filter((u) => u && !u.startsWith('blob:'));
 
   const payload: Record<string, unknown> = {
+    id: toDeterministicUuid(entry.id),
     user_id: userId,
     entry_date: isoDate,
     item_name: entry.itemName,
@@ -324,10 +627,6 @@ export function mapProductionEntryToSupabasePayload(
     photo_urls: photoUrls,
     import_batch_id: entry.importBatchId ?? null,
   };
-
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(entry.id)) {
-    payload.id = entry.id;
-  }
 
   return payload;
 }
@@ -362,6 +661,7 @@ function mapProductionEntryToLegacySupabasePayload(
   });
 
   const payload: Record<string, unknown> = {
+    id: toDeterministicUuid(entry.id),
     user_id: userId,
     entry_date: isoDate,
     garment_type:
@@ -378,10 +678,6 @@ function mapProductionEntryToLegacySupabasePayload(
     short_description: packedDescription,
     photo_urls: photoUrls,
   };
-
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(entry.id)) {
-    payload.id = entry.id;
-  }
 
   return payload;
 }
@@ -420,7 +716,26 @@ export interface AuxiliaryModulesCloudPayload {
 export async function readAuxiliaryModulesFromSupabaseMetadata(): Promise<AuxiliaryModulesCloudPayload | null> {
   if (!supabase) return null;
   const { data } = await supabase.auth.getUser();
-  const raw = data.user?.user_metadata?.[AUTH_METADATA_AUXILIARY_KEY];
+  const metadata = data.user?.user_metadata;
+  if (metadata?.[AUTH_METADATA_TOMBSTONES_KEY]) {
+    const cloudTombstones = metadata[
+      AUTH_METADATA_TOMBSTONES_KEY
+    ] as Partial<DeletedTombstones>;
+    const localTombstones = getLocalDeletedTombstones();
+    saveLocalDeletedTombstones({
+      ids: [
+        ...localTombstones.ids,
+        ...(Array.isArray(cloudTombstones.ids) ? cloudTombstones.ids : []),
+      ],
+      signatures: [
+        ...localTombstones.signatures,
+        ...(Array.isArray(cloudTombstones.signatures)
+          ? cloudTombstones.signatures
+          : []),
+      ],
+    });
+  }
+  const raw = metadata?.[AUTH_METADATA_AUXILIARY_KEY];
   if (!raw || typeof raw !== 'object') return null;
   return raw as AuxiliaryModulesCloudPayload;
 }
@@ -438,6 +753,7 @@ export async function saveAuxiliaryModulesToSupabaseMetadata(
   const { error } = await supabase.auth.updateUser({
     data: {
       [AUTH_METADATA_AUXILIARY_KEY]: payload,
+      [AUTH_METADATA_TOMBSTONES_KEY]: getLocalDeletedTombstones(),
     },
   });
   return !error;
@@ -449,9 +765,34 @@ export async function saveAuxiliaryModulesToSupabaseMetadata(
 async function readEntriesFromSupabaseUserMetadata(): Promise<ProductionEntry[]> {
   if (!supabase) return [];
   const { data } = await supabase.auth.getUser();
-  const rawList = data.user?.user_metadata?.[AUTH_METADATA_ENTRIES_KEY];
+  const metadata = data.user?.user_metadata;
+  if (metadata?.[AUTH_METADATA_TOMBSTONES_KEY]) {
+    const cloudTombstones = metadata[
+      AUTH_METADATA_TOMBSTONES_KEY
+    ] as Partial<DeletedTombstones>;
+    const localTombstones = getLocalDeletedTombstones();
+    saveLocalDeletedTombstones({
+      ids: [
+        ...localTombstones.ids,
+        ...(Array.isArray(cloudTombstones.ids) ? cloudTombstones.ids : []),
+      ],
+      signatures: [
+        ...localTombstones.signatures,
+        ...(Array.isArray(cloudTombstones.signatures)
+          ? cloudTombstones.signatures
+          : []),
+      ],
+    });
+  }
+  const rawList = metadata?.[AUTH_METADATA_ENTRIES_KEY];
   if (!Array.isArray(rawList)) return [];
-  return rawList as ProductionEntry[];
+  const tombstones = getLocalDeletedTombstones();
+  return (rawList as ProductionEntry[])
+    .filter((e) => !isEntryDeletedByTombstone(e, tombstones))
+    .map((e) => ({
+      ...e,
+      id: toDeterministicUuid(e.id),
+    }));
 }
 
 /**
@@ -462,20 +803,27 @@ async function writeEntriesToSupabaseUserMetadata(
   entries: ProductionEntry[]
 ): Promise<boolean> {
   if (!supabase) return false;
+  const tombstones = getLocalDeletedTombstones();
+  const { cleanedEntries } = deduplicateAndCleanProductionEntries(entries);
   // Strip blob and large base64 data URLs before saving in user_metadata to stay well within JWT metadata limits
-  const sanitized = entries.slice(0, 150).map((e) => ({
-    ...e,
-    photos: (e.photos || []).filter(
-      (p) =>
-        (p.storagePath && !p.storagePath.startsWith('data:')) ||
-        (p.previewUrl &&
-          !p.previewUrl.startsWith('blob:') &&
-          !p.previewUrl.startsWith('data:'))
-    ),
-  }));
+  const sanitized = cleanedEntries
+    .filter((e) => !isEntryDeletedByTombstone(e, tombstones))
+    .slice(0, 150)
+    .map((e) => ({
+      ...e,
+      id: toDeterministicUuid(e.id),
+      photos: (e.photos || []).filter(
+        (p) =>
+          (p.storagePath && !p.storagePath.startsWith('data:')) ||
+          (p.previewUrl &&
+            !p.previewUrl.startsWith('blob:') &&
+            !p.previewUrl.startsWith('data:'))
+      ),
+    }));
   const { error } = await supabase.auth.updateUser({
     data: {
       [AUTH_METADATA_ENTRIES_KEY]: sanitized,
+      [AUTH_METADATA_TOMBSTONES_KEY]: tombstones,
     },
   });
   return !error;
@@ -485,7 +833,8 @@ async function writeEntriesToSupabaseUserMetadata(
  * Fetches all production entries for the authenticated user in chronological order (newest first).
  */
 export async function fetchProductionEntriesFromSupabase(
-  explicitUserId?: string
+  explicitUserId?: string,
+  referenceBackupEntries: ProductionEntry[] = []
 ): Promise<{
   entries: ProductionEntry[];
   missingTableSetup?: boolean;
@@ -516,8 +865,12 @@ export async function fetchProductionEntriesFromSupabase(
     // If `public.production_entries` table hasn't been created in Supabase SQL Editor yet:
     if (isMissingTableError(error.message, error.code)) {
       const metadataEntries = await readEntriesFromSupabaseUserMetadata();
+      const { cleanedEntries } = deduplicateAndCleanProductionEntries(
+        metadataEntries,
+        referenceBackupEntries
+      );
       return {
-        entries: metadataEntries,
+        entries: cleanedEntries,
         missingTableSetup: true,
         errorBn: null,
       };
@@ -555,12 +908,28 @@ export async function fetchProductionEntriesFromSupabase(
     }
   }
 
-  return { entries: mapped, missingTableSetup: false, errorBn: null };
+  // Deduplicate and clean any obsolete or tombstoned rows from the cloud table automatically
+  const { cleanedEntries, obsoleteCloudIdsToDelete } =
+    deduplicateAndCleanProductionEntries(mapped, referenceBackupEntries);
+
+  if (obsoleteCloudIdsToDelete.length > 0) {
+    const validUuids = obsoleteCloudIdsToDelete.filter(isValidUuid);
+    if (validUuids.length > 0) {
+      await supabase
+        .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
+        .delete()
+        .in('id', validUuids)
+        .eq('user_id', userId);
+    }
+  }
+
+  return { entries: cleanedEntries, missingTableSetup: false, errorBn: null };
 }
 
 /**
  * Saves or updates a single production entry in Supabase.
- * Automatically falls back to legacy column layout or Auth user_metadata if table is not created yet.
+ * Always normalizes IDs to deterministic UUIDs and uses upsert so editing an imported record
+ * updates it in-place without ever creating a duplicate.
  */
 export async function saveProductionEntryToSupabase(
   entry: ProductionEntry
@@ -570,9 +939,18 @@ export async function saveProductionEntryToSupabase(
   missingTableSetup?: boolean;
   errorBn: string | null;
 }> {
+  const canonicalId = toDeterministicUuid(entry.id);
+  const normalizedEntry: ProductionEntry = {
+    ...entry,
+    id: canonicalId,
+  };
+
+  // Ensure saving/editing unmarks any previous deletion tombstone for this record
+  unmarkEntryDeletedInTombstones(normalizedEntry);
+
   if (!supabase) {
     return {
-      savedEntry: entry,
+      savedEntry: normalizedEntry,
       persistedToCloud: false,
       errorBn:
         'সুপাবেস ক্লাউড সংযোগ কনফিগার করা নেই। স্থায়ীভাবে সংরক্ষণের জন্য সুপাবেস সংযোগ নিশ্চিত করুন।',
@@ -584,37 +962,30 @@ export async function saveProductionEntryToSupabase(
 
   if (!userId) {
     return {
-      savedEntry: entry,
+      savedEntry: normalizedEntry,
       persistedToCloud: false,
       errorBn:
         'আপনি বর্তমানে লগইন করা নেই। পেজ রিফ্রেশের পরও ডেটা স্থায়ীভাবে ক্লাউডে রাখতে উপরে "লগইন" বাটনে ক্লিক করে গুগল বা ইমেইল দিয়ে লগইন করুন।',
     };
   }
 
-  const fullPayload = mapProductionEntryToSupabasePayload(entry, userId);
-  const isExistingUuid = Boolean(fullPayload.id);
+  const fullPayload = mapProductionEntryToSupabasePayload(normalizedEntry, userId);
 
   const attemptSave = async (payloadToUse: Record<string, unknown>) => {
-    if (isExistingUuid) {
-      return await supabase!
-        .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
-        .upsert(payloadToUse)
-        .eq('user_id', userId)
-        .select('*')
-        .single();
-    } else {
-      return await supabase!
-        .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
-        .insert(payloadToUse)
-        .select('*')
-        .single();
-    }
+    return await supabase!
+      .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
+      .upsert(payloadToUse, { onConflict: 'id' })
+      .select('*')
+      .single();
   };
 
   let { data, error } = await attemptSave(fullPayload);
 
   if (error && isMissingColumnError(error.message, error.code)) {
-    const legacyPayload = mapProductionEntryToLegacySupabasePayload(entry, userId);
+    const legacyPayload = mapProductionEntryToLegacySupabasePayload(
+      normalizedEntry,
+      userId
+    );
     const retryRes = await attemptSave(legacyPayload);
     data = retryRes.data;
     error = retryRes.error;
@@ -624,14 +995,22 @@ export async function saveProductionEntryToSupabase(
   if (error && isMissingTableError(error.message, error.code)) {
     const existingList = await readEntriesFromSupabaseUserMetadata();
     const stampedEntry: ProductionEntry = {
-      ...entry,
+      ...normalizedEntry,
       userId,
-      createdAt: entry.createdAt || new Date().toISOString(),
+      createdAt: normalizedEntry.createdAt || new Date().toISOString(),
     };
-    const exists = existingList.some((item) => item.id === stampedEntry.id);
+    const sig = getEntryDateItemSignature(stampedEntry);
+    const exists = existingList.some(
+      (item) =>
+        toDeterministicUuid(item.id) === canonicalId ||
+        getEntryDateItemSignature(item) === sig
+    );
     const updatedList = exists
       ? existingList.map((item) =>
-          item.id === stampedEntry.id ? stampedEntry : item
+          toDeterministicUuid(item.id) === canonicalId ||
+          getEntryDateItemSignature(item) === sig
+            ? stampedEntry
+            : item
         )
       : [stampedEntry, ...existingList];
 
@@ -646,7 +1025,7 @@ export async function saveProductionEntryToSupabase(
 
   if (error || !data) {
     return {
-      savedEntry: entry,
+      savedEntry: normalizedEntry,
       persistedToCloud: false,
       errorBn: `সুপাবেস ডাটাবেসে সংরক্ষণ ব্যর্থ হয়েছে: ${
         error?.message || 'অজানা ত্রুটি'
@@ -654,8 +1033,30 @@ export async function saveProductionEntryToSupabase(
     };
   }
 
+  // Also clean up any legacy duplicate row in `public.production_entries` for the same date + item_name that has a different UUID
+  const isoDate = ddMmYyyyToIsoInput(normalizedEntry.date);
+  if (isoDate && normalizedEntry.itemName) {
+    await supabase
+      .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
+      .delete()
+      .eq('user_id', userId)
+      .eq('entry_date', isoDate)
+      .eq('item_name', normalizedEntry.itemName)
+      .neq('id', canonicalId);
+  }
+
+  const mappedSaved = mapSupabaseRowToProductionEntry(data as SupabaseProductionRow);
+  // Preserve base64 photos if the entry had inline base64 photos
+  const finalSaved: ProductionEntry = {
+    ...mappedSaved,
+    photos:
+      mappedSaved.photos && mappedSaved.photos.length > 0
+        ? mappedSaved.photos
+        : normalizedEntry.photos,
+  };
+
   return {
-    savedEntry: mapSupabaseRowToProductionEntry(data as SupabaseProductionRow),
+    savedEntry: finalSaved,
     persistedToCloud: true,
     missingTableSetup: false,
     errorBn: null,
@@ -663,22 +1064,30 @@ export async function saveProductionEntryToSupabase(
 }
 
 /**
- * Deletes a production entry from Supabase if authenticated.
+ * Deletes a production entry permanently from local tombstones, Supabase SQL table, and Auth metadata fallback.
  */
 export async function deleteProductionEntryFromSupabase(
-  id: string
+  id: string,
+  entrySnapshot?: ProductionEntry
 ): Promise<{ errorBn: string | null }> {
+  const canonicalId = toDeterministicUuid(id);
+  markEntryDeletedInTombstones(entrySnapshot || id);
+
   if (!supabase) return { errorBn: null };
 
   const { data: sessionData } = await supabase.auth.getSession();
   const userId = sessionData.session?.user?.id;
   if (!userId) return { errorBn: null };
 
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+  const idsToDelete = Array.from(
+    new Set([id, canonicalId].filter(isValidUuid))
+  );
+
+  if (idsToDelete.length > 0) {
     const { error } = await supabase
       .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
       .delete()
-      .eq('id', id)
+      .in('id', idsToDelete)
       .eq('user_id', userId);
 
     if (error && !isMissingTableError(error.message, error.code)) {
@@ -686,19 +1095,37 @@ export async function deleteProductionEntryFromSupabase(
     }
   }
 
-  // Also remove from Auth user_metadata fallback if present
-  const existingMeta = await readEntriesFromSupabaseUserMetadata();
-  if (existingMeta.some((e) => e.id === id)) {
-    await writeEntriesToSupabaseUserMetadata(
-      existingMeta.filter((e) => e.id !== id)
-    );
+  // If entrySnapshot is provided, also delete any duplicate rows with matching date + itemName in SQL table
+  if (entrySnapshot && entrySnapshot.date && entrySnapshot.itemName) {
+    const isoDate = ddMmYyyyToIsoInput(entrySnapshot.date);
+    if (isoDate) {
+      await supabase
+        .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
+        .delete()
+        .eq('user_id', userId)
+        .eq('entry_date', isoDate)
+        .eq('item_name', entrySnapshot.itemName);
+    }
   }
+
+  // Also remove from Auth user_metadata fallback and persist updated tombstones to cloud
+  const existingMeta = await readEntriesFromSupabaseUserMetadata();
+  const targetSig = entrySnapshot
+    ? getEntryDateItemSignature(entrySnapshot)
+    : null;
+  const filteredMeta = existingMeta.filter(
+    (e) =>
+      e.id !== id &&
+      toDeterministicUuid(e.id) !== canonicalId &&
+      (!targetSig || getEntryDateItemSignature(e) !== targetSig)
+  );
+  await writeEntriesToSupabaseUserMetadata(filteredMeta);
 
   return { errorBn: null };
 }
 
 /**
- * Batch inserts imported production entries with rollback capability via import_batch_id.
+ * Batch inserts/upserts imported production entries with rollback capability via import_batch_id.
  */
 export async function batchImportProductionEntriesToSupabase(
   entries: ProductionEntry[],
@@ -708,7 +1135,22 @@ export async function batchImportProductionEntriesToSupabase(
   persistedToCloud: boolean;
   errorBn: string | null;
 }> {
-  const stamped = entries.map((e) => ({ ...e, importBatchId: batchId }));
+  const tombstones = getLocalDeletedTombstones();
+  const stamped = entries
+    .filter((e) => !isEntryDeletedByTombstone(e, tombstones))
+    .map((e) => ({
+      ...e,
+      id: toDeterministicUuid(e.id),
+      importBatchId: batchId,
+    }));
+
+  if (stamped.length === 0) {
+    return {
+      importedEntries: [],
+      persistedToCloud: true,
+      errorBn: null,
+    };
+  }
 
   if (!supabase) {
     return {
@@ -731,7 +1173,7 @@ export async function batchImportProductionEntriesToSupabase(
   const payloads = stamped.map((e) => mapProductionEntryToSupabasePayload(e, userId));
   let { data, error } = await supabase
     .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
-    .insert(payloads)
+    .upsert(payloads, { onConflict: 'id' })
     .select('*');
 
   if (error && isMissingColumnError(error.message, error.code)) {
@@ -740,7 +1182,7 @@ export async function batchImportProductionEntriesToSupabase(
     );
     const retryRes = await supabase
       .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
-      .insert(legacyPayloads)
+      .upsert(legacyPayloads, { onConflict: 'id' })
       .select('*');
     data = retryRes.data;
     error = retryRes.error;

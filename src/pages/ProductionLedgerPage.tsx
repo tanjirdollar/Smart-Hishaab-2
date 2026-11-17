@@ -647,7 +647,7 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       return;
     }
 
-    if (draft.selectedSizes.length === 0) {
+    if (!draft.id && draft.selectedSizes.length === 0) {
       setFormErrorBn('অনুগ্রহ করে অন্তত একটি সাইজ (১৪–৩২) নির্বাচন করুন।');
       return;
     }

@@ -31,12 +31,18 @@ import {
 } from './services/financialDomainService';
 import {
   batchImportProductionEntriesToSupabase,
+  deduplicateAndCleanProductionEntries,
   deleteProductionEntryFromSupabase,
   fetchProductionEntriesFromSupabase,
+  getEntryDateItemSignature,
+  getLocalDeletedTombstones,
+  markEntryDeletedInTombstones,
   readAuxiliaryModulesFromSupabaseMetadata,
   rollbackImportBatchFromSupabase,
   saveAuxiliaryModulesToSupabaseMetadata,
   saveProductionEntryToSupabase,
+  toDeterministicUuid,
+  unmarkEntryDeletedInTombstones,
   uploadProductionPhotoToSupabase,
 } from './services/supabaseDataService';
 import { DataExportModal } from './components/ui/DataExportModal';
@@ -55,6 +61,24 @@ const LOCAL_CACHE_KEY_PREFIX = 'smart_hisab_repo_cache_v2_';
 const ATTACHED_BACKUP_IMPORTED_FLAG = 'smart_hisab_backup_20261106_loaded_v1';
 const THEME_STORAGE_KEY = 'smart_hisab_theme';
 
+function filterAuxByTombstones<T extends { id: string }>(list: T[]): T[] {
+  const deletedIds = new Set(getLocalDeletedTombstones().ids);
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of list) {
+    if (
+      deletedIds.has(item.id) ||
+      deletedIds.has(toDeterministicUuid(item.id))
+    ) {
+      continue;
+    }
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
+}
+
 function loadCachedRepositoryState(userId: string | null): ApplicationRepositoryState | null {
   try {
     const key = `${LOCAL_CACHE_KEY_PREFIX}${userId || 'guest'}`;
@@ -63,13 +87,20 @@ function loadCachedRepositoryState(userId: string | null): ApplicationRepository
     const parsed = JSON.parse(raw) as Partial<ApplicationRepositoryState>;
     if (!parsed || !Array.isArray(parsed.productionEntries)) return null;
     const initial = getInitialRepositoryState();
+    const { cleanedEntries } = deduplicateAndCleanProductionEntries(
+      parsed.productionEntries ?? initial.productionEntries
+    );
     return {
-      productionEntries: parsed.productionEntries ?? initial.productionEntries,
-      wageRecords: parsed.wageRecords ?? initial.wageRecords,
-      paymentWithdrawals: parsed.paymentWithdrawals ?? initial.paymentWithdrawals,
-      loanRecords: parsed.loanRecords ?? initial.loanRecords,
-      fundRecords: parsed.fundRecords ?? initial.fundRecords,
-      incomeExpenseRecords: parsed.incomeExpenseRecords ?? initial.incomeExpenseRecords,
+      productionEntries: cleanedEntries,
+      wageRecords: filterAuxByTombstones(parsed.wageRecords ?? initial.wageRecords),
+      paymentWithdrawals: filterAuxByTombstones(
+        parsed.paymentWithdrawals ?? initial.paymentWithdrawals
+      ),
+      loanRecords: filterAuxByTombstones(parsed.loanRecords ?? initial.loanRecords),
+      fundRecords: filterAuxByTombstones(parsed.fundRecords ?? initial.fundRecords),
+      incomeExpenseRecords: filterAuxByTombstones(
+        parsed.incomeExpenseRecords ?? initial.incomeExpenseRecords
+      ),
     };
   } catch {
     return null;
@@ -114,6 +145,8 @@ export default function App() {
   });
 
   const isSyncingRef = useRef(false);
+  const lastLoadedUserIdRef = useRef<string | null>(null);
+  const referenceBackupEntriesRef = useRef<ProductionEntry[]>([]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -142,12 +175,26 @@ export default function App() {
     setCloudSyncBannerBn(null);
 
     try {
-      // Load any cached user state first so we can sync any unsaved local records
+      // Ensure we have the reference backup parsed so we can deduplicate & rehydrate photos accurately
+      const parsedBackup = await fetchAndParseAttachedUserBackup();
+      const backupEntries = parsedBackup?.state.productionEntries || [];
+      if (backupEntries.length > 0) {
+        referenceBackupEntriesRef.current = backupEntries;
+      }
+
       const userCached = loadCachedRepositoryState(user.id);
-      const guestCached = loadCachedRepositoryState(null);
+      const alreadyLoadedFlag =
+        localStorage.getItem(ATTACHED_BACKUP_IMPORTED_FLAG) === 'true';
+
+      // Clear any leftover guest cache so old guest records never re-merge into the logged-in account
+      try {
+        localStorage.removeItem(`${LOCAL_CACHE_KEY_PREFIX}guest`);
+      } catch {
+        // ignore
+      }
 
       const { entries: cloudEntries, missingTableSetup, errorBn } =
-        await fetchProductionEntriesFromSupabase(user.id);
+        await fetchProductionEntriesFromSupabase(user.id, backupEntries);
 
       if (missingTableSetup) {
         setCloudSyncBannerBn(
@@ -163,128 +210,103 @@ export default function App() {
 
       const cloudAux = await readAuxiliaryModulesFromSupabaseMetadata();
 
-      // Check if there are any non-UUID entries created before login or during offline that need to be synced to Supabase
-      const localCandidates = [
-        ...(userCached?.productionEntries || []),
-        ...(guestCached?.productionEntries || []),
-      ];
-      const existingFingerprints = new Set(
-        cloudEntries.map(
-          (c) => `${c.date}|${c.itemName}|${c.pieces ?? 0}|${c.totalWage}`
-        )
-      );
-      const unsyncedEntries = localCandidates.filter(
-        (item) =>
-          !cloudEntries.some((c) => c.id === item.id) &&
-          !existingFingerprints.has(
-            `${item.date}|${item.itemName}|${item.pieces ?? 0}|${item.totalWage}`
-          ) &&
-          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-            item.id
-          )
-      );
-
       let finalCloudEntries = cloudEntries;
 
-      if (unsyncedEntries.length > 0) {
-        const batchRes = await batchImportProductionEntriesToSupabase(
-          unsyncedEntries,
-          `sync-${Date.now()}`
-        );
-        if (!batchRes.errorBn && batchRes.importedEntries.length > 0) {
-          const refreshed = await fetchProductionEntriesFromSupabase(user.id);
-          if (!refreshed.errorBn) {
-            finalCloudEntries = refreshed.entries;
-          }
-        }
-        // Clear guest unsynced entries after migrating to user's Supabase account
-        if (guestCached && guestCached.productionEntries.length > 0) {
-          saveCachedRepositoryState(null, {
-            ...guestCached,
-            productionEntries: [],
-          });
-        }
-      }
-
-      // If both cloud and local have no production entries yet, automatically load attached user backup
+      // Only seed from the attached backup on very first initialization when both cloud and user cache are empty
       let autoLoadedBackupState: ApplicationRepositoryState | null = null;
       if (
+        !alreadyLoadedFlag &&
         finalCloudEntries.length === 0 &&
-        (!userCached || userCached.productionEntries.length === 0)
+        (!userCached || userCached.productionEntries.length === 0) &&
+        parsedBackup &&
+        parsedBackup.state.productionEntries.length > 0
       ) {
-        const parsedBackup = await fetchAndParseAttachedUserBackup();
-        if (parsedBackup && parsedBackup.state.productionEntries.length > 0) {
-          autoLoadedBackupState = parsedBackup.state;
-          localStorage.setItem(ATTACHED_BACKUP_IMPORTED_FLAG, 'true');
-          const batchRes = await batchImportProductionEntriesToSupabase(
-            parsedBackup.state.productionEntries,
-            'backup-2026-11-06'
-          );
-          if (!batchRes.errorBn && batchRes.importedEntries.length > 0) {
-            finalCloudEntries = batchRes.importedEntries;
-          } else {
-            finalCloudEntries = parsedBackup.state.productionEntries;
-          }
-          await saveAuxiliaryModulesToSupabaseMetadata({
-            wageRecords: parsedBackup.state.wageRecords,
-            paymentWithdrawals: parsedBackup.state.paymentWithdrawals,
-            loanRecords: parsedBackup.state.loanRecords,
-            fundRecords: parsedBackup.state.fundRecords,
-            incomeExpenseRecords: parsedBackup.state.incomeExpenseRecords,
-          });
+        autoLoadedBackupState = parsedBackup.state;
+        localStorage.setItem(ATTACHED_BACKUP_IMPORTED_FLAG, 'true');
+        const batchRes = await batchImportProductionEntriesToSupabase(
+          parsedBackup.state.productionEntries,
+          'backup-2026-11-06'
+        );
+        if (!batchRes.errorBn && batchRes.importedEntries.length > 0) {
+          finalCloudEntries = batchRes.importedEntries;
+        } else {
+          finalCloudEntries = parsedBackup.state.productionEntries;
         }
+        await saveAuxiliaryModulesToSupabaseMetadata({
+          wageRecords: parsedBackup.state.wageRecords,
+          paymentWithdrawals: parsedBackup.state.paymentWithdrawals,
+          loanRecords: parsedBackup.state.loanRecords,
+          fundRecords: parsedBackup.state.fundRecords,
+          incomeExpenseRecords: parsedBackup.state.incomeExpenseRecords,
+        });
+      } else if (finalCloudEntries.length > 0 || (userCached && userCached.productionEntries.length > 0)) {
+        localStorage.setItem(ATTACHED_BACKUP_IMPORTED_FLAG, 'true');
       }
 
       setRepo((prev) => {
         const base = autoLoadedBackupState || userCached || prev;
-        const resolvedWithdrawals =
+        const rawCandidateEntries =
+          finalCloudEntries.length > 0
+            ? finalCloudEntries
+            : base.productionEntries;
+
+        const { cleanedEntries } = deduplicateAndCleanProductionEntries(
+          rawCandidateEntries,
+          backupEntries
+        );
+
+        const resolvedWithdrawals = filterAuxByTombstones(
           (cloudAux?.paymentWithdrawals && cloudAux.paymentWithdrawals.length > 0
             ? cloudAux.paymentWithdrawals
             : null) ||
-          (base.paymentWithdrawals && base.paymentWithdrawals.length > 0
-            ? base.paymentWithdrawals
-            : prev.paymentWithdrawals);
-        const resolvedWages =
+            (base.paymentWithdrawals && base.paymentWithdrawals.length > 0
+              ? base.paymentWithdrawals
+              : prev.paymentWithdrawals)
+        );
+        const resolvedWages = filterAuxByTombstones(
           (cloudAux?.wageRecords && cloudAux.wageRecords.length > 0
             ? cloudAux.wageRecords
             : null) ||
-          (base.wageRecords && base.wageRecords.length > 0
-            ? base.wageRecords
-            : prev.wageRecords);
-        const resolvedLoans =
+            (base.wageRecords && base.wageRecords.length > 0
+              ? base.wageRecords
+              : prev.wageRecords)
+        );
+        const resolvedLoans = filterAuxByTombstones(
           (cloudAux?.loanRecords && cloudAux.loanRecords.length > 0
             ? cloudAux.loanRecords
             : null) ||
-          (base.loanRecords && base.loanRecords.length > 0
-            ? base.loanRecords
-            : prev.loanRecords);
-        const resolvedFunds =
+            (base.loanRecords && base.loanRecords.length > 0
+              ? base.loanRecords
+              : prev.loanRecords)
+        );
+        const resolvedFunds = filterAuxByTombstones(
           (cloudAux?.fundRecords && cloudAux.fundRecords.length > 0
             ? cloudAux.fundRecords
             : null) ||
-          (base.fundRecords && base.fundRecords.length > 0
-            ? base.fundRecords
-            : prev.fundRecords);
-        const resolvedIncomeExpense =
+            (base.fundRecords && base.fundRecords.length > 0
+              ? base.fundRecords
+              : prev.fundRecords)
+        );
+        const resolvedIncomeExpense = filterAuxByTombstones(
           (cloudAux?.incomeExpenseRecords &&
           cloudAux.incomeExpenseRecords.length > 0
             ? cloudAux.incomeExpenseRecords
             : null) ||
-          (base.incomeExpenseRecords && base.incomeExpenseRecords.length > 0
-            ? base.incomeExpenseRecords
-            : prev.incomeExpenseRecords);
+            (base.incomeExpenseRecords && base.incomeExpenseRecords.length > 0
+              ? base.incomeExpenseRecords
+              : prev.incomeExpenseRecords)
+        );
 
-        return {
-          productionEntries:
-            finalCloudEntries.length > 0
-              ? finalCloudEntries
-              : base.productionEntries,
+        const nextState: ApplicationRepositoryState = {
+          productionEntries: cleanedEntries,
           paymentWithdrawals: resolvedWithdrawals,
           wageRecords: resolvedWages,
           loanRecords: resolvedLoans,
           fundRecords: resolvedFunds,
           incomeExpenseRecords: resolvedIncomeExpense,
         };
+        saveCachedRepositoryState(user.id, nextState);
+        return nextState;
       });
     } finally {
       setIsLoadingCloudData(false);
@@ -292,95 +314,80 @@ export default function App() {
     }
   }, []);
 
-  // Automatically load the user's attached SmartHisab_Backup_2026-11-06.json on first load or rehydrate missing photos
+  // One-time initialization of attached backup (if never loaded) or photo rehydration & deduplication
   useEffect(() => {
     let cancelled = false;
-    const alreadyLoaded = localStorage.getItem(ATTACHED_BACKUP_IMPORTED_FLAG);
-    const hasMissingPhotos = repo.productionEntries.every(
-      (e) => !e.photos || e.photos.length === 0
-    );
-    if (
-      alreadyLoaded === 'true' &&
-      repo.productionEntries.length > 0 &&
-      repo.paymentWithdrawals.length > 0 &&
-      !hasMissingPhotos
-    ) {
-      return;
-    }
 
     fetchAndParseAttachedUserBackup().then((parsed) => {
       if (cancelled || !parsed) return;
-      localStorage.setItem(ATTACHED_BACKUP_IMPORTED_FLAG, 'true');
+      referenceBackupEntriesRef.current = parsed.state.productionEntries;
+      const alreadyLoaded =
+        localStorage.getItem(ATTACHED_BACKUP_IMPORTED_FLAG) === 'true';
+
       setRepo((prev) => {
-        const photoMapByFingerprint = new Map<string, ProductionEntry['photos']>();
-        for (const bkpEntry of parsed.state.productionEntries) {
-          if (bkpEntry.photos && bkpEntry.photos.length > 0) {
-            photoMapByFingerprint.set(
-              `${bkpEntry.date}|${bkpEntry.itemName}|${bkpEntry.pieces ?? 0}`,
-              bkpEntry.photos
-            );
-          }
+        // If already initialized or entries exist, ONLY deduplicate and restore missing base64 photos — NEVER re-add deleted or unedited entries!
+        if (alreadyLoaded || prev.productionEntries.length > 0) {
+          localStorage.setItem(ATTACHED_BACKUP_IMPORTED_FLAG, 'true');
+          const { cleanedEntries } = deduplicateAndCleanProductionEntries(
+            prev.productionEntries,
+            parsed.state.productionEntries
+          );
+          const nextState: ApplicationRepositoryState = {
+            ...prev,
+            productionEntries: cleanedEntries,
+            wageRecords: filterAuxByTombstones(
+              prev.wageRecords.length > 0
+                ? prev.wageRecords
+                : parsed.state.wageRecords
+            ),
+            paymentWithdrawals: filterAuxByTombstones(
+              prev.paymentWithdrawals.length > 0
+                ? prev.paymentWithdrawals
+                : parsed.state.paymentWithdrawals
+            ),
+            loanRecords: filterAuxByTombstones(
+              prev.loanRecords.length > 0
+                ? prev.loanRecords
+                : parsed.state.loanRecords
+            ),
+            fundRecords: filterAuxByTombstones(
+              prev.fundRecords.length > 0
+                ? prev.fundRecords
+                : parsed.state.fundRecords
+            ),
+            incomeExpenseRecords: filterAuxByTombstones(
+              prev.incomeExpenseRecords.length > 0
+                ? prev.incomeExpenseRecords
+                : parsed.state.incomeExpenseRecords
+            ),
+          };
+          saveCachedRepositoryState(currentUser?.id ?? null, nextState);
+          return nextState;
         }
 
-        const enrichedExisting = prev.productionEntries.map((e) => {
-          if (e.photos && e.photos.length > 0) return e;
-          const matchedPhotos = photoMapByFingerprint.get(
-            `${e.date}|${e.itemName}|${e.pieces ?? 0}`
-          );
-          return matchedPhotos ? { ...e, photos: matchedPhotos } : e;
-        });
-
-        const existingProdKeys = new Set(
-          enrichedExisting.map(
-            (e) => `${e.date}|${e.itemName}|${e.pieces ?? 0}|${e.totalWage}`
-          )
+        // First-time seed when no entries exist yet
+        localStorage.setItem(ATTACHED_BACKUP_IMPORTED_FLAG, 'true');
+        const { cleanedEntries } = deduplicateAndCleanProductionEntries(
+          parsed.state.productionEntries,
+          parsed.state.productionEntries
         );
-        const mergedProd =
-          alreadyLoaded === 'true' && enrichedExisting.length > 0
-            ? enrichedExisting
-            : [
-                ...enrichedExisting,
-                ...parsed.state.productionEntries.filter(
-                  (e) =>
-                    !existingProdKeys.has(
-                      `${e.date}|${e.itemName}|${e.pieces ?? 0}|${e.totalWage}`
-                    )
-                ),
-              ];
-
-        const nextState: ApplicationRepositoryState = {
-          productionEntries:
-            mergedProd.length > 0 ? mergedProd : parsed.state.productionEntries,
-          wageRecords:
-            prev.wageRecords.length > 0
-              ? prev.wageRecords
-              : parsed.state.wageRecords,
-          paymentWithdrawals:
-            prev.paymentWithdrawals.length > 0
-              ? prev.paymentWithdrawals
-              : parsed.state.paymentWithdrawals,
-          loanRecords:
-            prev.loanRecords.length > 0
-              ? prev.loanRecords
-              : parsed.state.loanRecords,
-          fundRecords:
-            prev.fundRecords.length > 0
-              ? prev.fundRecords
-              : parsed.state.fundRecords,
-          incomeExpenseRecords:
-            prev.incomeExpenseRecords.length > 0
-              ? prev.incomeExpenseRecords
-              : parsed.state.incomeExpenseRecords,
+        const seededState: ApplicationRepositoryState = {
+          productionEntries: cleanedEntries,
+          wageRecords: filterAuxByTombstones(parsed.state.wageRecords),
+          paymentWithdrawals: filterAuxByTombstones(parsed.state.paymentWithdrawals),
+          loanRecords: filterAuxByTombstones(parsed.state.loanRecords),
+          fundRecords: filterAuxByTombstones(parsed.state.fundRecords),
+          incomeExpenseRecords: filterAuxByTombstones(parsed.state.incomeExpenseRecords),
         };
-        saveCachedRepositoryState(currentUser?.id ?? null, nextState);
-        return nextState;
+        saveCachedRepositoryState(currentUser?.id ?? null, seededState);
+        return seededState;
       });
     });
 
     return () => {
       cancelled = true;
     };
-  }, [currentUser?.id, repo.paymentWithdrawals.length, repo.productionEntries.length]);
+  }, [currentUser?.id]);
 
   // Wait for Supabase auth session initialization on mount and page refresh
   useEffect(() => {
@@ -397,6 +404,7 @@ export default function App() {
       setCurrentUser(usr);
       setIsAuthInitialized(true);
       if (usr) {
+        lastLoadedUserIdRef.current = usr.id;
         await loadCloudRecordsForUser(usr);
       } else {
         const guestCache = loadCachedRepositoryState(null);
@@ -407,13 +415,23 @@ export default function App() {
     });
 
     const { data: authListener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
+      (event, session) => {
         if (!isMounted) return;
         const usr = session?.user ?? null;
         setCurrentUser(usr);
         setIsAuthInitialized(true);
-        if (usr) {
-          loadCloudRecordsForUser(usr);
+
+        // CRITICAL: Ignore USER_UPDATED and TOKEN_REFRESHED events so saving/deleting metadata
+        // via supabase.auth.updateUser() never triggers a background reload race condition!
+        if (event === 'USER_UPDATED' || event === 'TOKEN_REFRESHED') {
+          return;
+        }
+
+        if (usr && lastLoadedUserIdRef.current !== usr.id) {
+          lastLoadedUserIdRef.current = usr.id;
+          void loadCloudRecordsForUser(usr);
+        } else if (!usr) {
+          lastLoadedUserIdRef.current = null;
         }
       }
     );
@@ -428,7 +446,7 @@ export default function App() {
     setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
   };
 
-  // Production CRUD handlers: Awaits confirmed Supabase save and returns status to caller
+  // Production CRUD handlers: Optimistically updates state & cache in-place and awaits confirmed Supabase save
   const handleSaveProduction = async (
     entry: ProductionEntry,
     rawFiles?: File[]
@@ -451,27 +469,73 @@ export default function App() {
       }
     }
 
+    const canonicalId = toDeterministicUuid(entry.id);
     const entryWithPhotos: ProductionEntry = {
       ...entry,
+      id: canonicalId,
       photos: updatedPhotos,
     };
 
+    unmarkEntryDeletedInTombstones(entryWithPhotos);
+
+    // 1. Optimistic in-place update so UI and localStorage are immediately consistent
+    setRepo((prev) => {
+      const exists = prev.productionEntries.some(
+        (item) =>
+          item.id === entry.id ||
+          toDeterministicUuid(item.id) === canonicalId
+      );
+      const rawUpdatedList = exists
+        ? prev.productionEntries.map((item) =>
+            item.id === entry.id ||
+            toDeterministicUuid(item.id) === canonicalId
+              ? entryWithPhotos
+              : item
+          )
+        : [entryWithPhotos, ...prev.productionEntries];
+
+      const { cleanedEntries } = deduplicateAndCleanProductionEntries(
+        rawUpdatedList,
+        referenceBackupEntriesRef.current
+      );
+
+      const nextState = {
+        ...prev,
+        productionEntries: cleanedEntries,
+      };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
+      return nextState;
+    });
+
+    // 2. Persist to Supabase cloud
     const { savedEntry, persistedToCloud, errorBn } =
       await saveProductionEntryToSupabase(entryWithPhotos);
 
     setRepo((prev) => {
       const exists = prev.productionEntries.some(
-        (item) => item.id === entry.id || item.id === savedEntry.id
+        (item) =>
+          item.id === entry.id ||
+          toDeterministicUuid(item.id) === canonicalId ||
+          item.id === savedEntry.id
       );
-      const nextEntries = exists
+      const rawUpdatedList = exists
         ? prev.productionEntries.map((item) =>
-            item.id === entry.id || item.id === savedEntry.id ? savedEntry : item
+            item.id === entry.id ||
+            toDeterministicUuid(item.id) === canonicalId ||
+            item.id === savedEntry.id
+              ? savedEntry
+              : item
           )
         : [savedEntry, ...prev.productionEntries];
 
+      const { cleanedEntries } = deduplicateAndCleanProductionEntries(
+        rawUpdatedList,
+        referenceBackupEntriesRef.current
+      );
+
       const nextState = {
         ...prev,
-        productionEntries: nextEntries,
+        productionEntries: cleanedEntries,
       };
       saveCachedRepositoryState(currentUser?.id ?? null, nextState);
       return nextState;
@@ -481,15 +545,36 @@ export default function App() {
   };
 
   const handleDeleteProduction = async (id: string) => {
-    await deleteProductionEntryFromSupabase(id);
+    const canonicalId = toDeterministicUuid(id);
+    const targetSnapshot = repo.productionEntries.find(
+      (item) =>
+        item.id === id || toDeterministicUuid(item.id) === canonicalId
+    );
+    const targetSig = targetSnapshot
+      ? getEntryDateItemSignature(targetSnapshot)
+      : null;
+
+    // 1. Immediately record deletion tombstone so this entry can NEVER resurrect
+    markEntryDeletedInTombstones(targetSnapshot || id);
+
+    // 2. Immediately remove from state and localStorage cache before network call
     setRepo((prev) => {
+      const nextEntries = prev.productionEntries.filter(
+        (item) =>
+          item.id !== id &&
+          toDeterministicUuid(item.id) !== canonicalId &&
+          (!targetSig || getEntryDateItemSignature(item) !== targetSig)
+      );
       const nextState = {
         ...prev,
-        productionEntries: prev.productionEntries.filter((item) => item.id !== id),
+        productionEntries: nextEntries,
       };
       saveCachedRepositoryState(currentUser?.id ?? null, nextState);
       return nextState;
     });
+
+    // 3. Delete from Supabase SQL table and Auth metadata fallback
+    await deleteProductionEntryFromSupabase(id, targetSnapshot);
   };
 
   // Batch Import & Rollback handlers
@@ -511,9 +596,13 @@ export default function App() {
 
     const added = res.importedEntries;
     setRepo((prev) => {
+      const { cleanedEntries } = deduplicateAndCleanProductionEntries(
+        [...added, ...prev.productionEntries],
+        referenceBackupEntriesRef.current
+      );
       const nextState = {
         ...prev,
-        productionEntries: [...added, ...prev.productionEntries],
+        productionEntries: cleanedEntries,
       };
       saveCachedRepositoryState(currentUser?.id ?? null, nextState);
       return nextState;
@@ -577,7 +666,7 @@ export default function App() {
       const map = new Map<string, T>();
       for (const item of incoming) map.set(item.id, item);
       for (const item of existing) map.set(item.id, item);
-      return Array.from(map.values());
+      return filterAuxByTombstones(Array.from(map.values()));
     };
 
     const nextWageRecords = mergeById(repo.wageRecords, importedState.wageRecords);
@@ -606,8 +695,12 @@ export default function App() {
     localStorage.setItem(ATTACHED_BACKUP_IMPORTED_FLAG, 'true');
 
     setRepo((prev) => {
+      const { cleanedEntries } = deduplicateAndCleanProductionEntries(
+        [...cloudSavedProd, ...prev.productionEntries],
+        referenceBackupEntriesRef.current
+      );
       const nextState: ApplicationRepositoryState = {
-        productionEntries: [...cloudSavedProd, ...prev.productionEntries],
+        productionEntries: cleanedEntries,
         wageRecords: nextWageRecords,
         paymentWithdrawals: nextWithdrawals,
         loanRecords: nextLoans,
@@ -629,6 +722,7 @@ export default function App() {
         ? prev.wageRecords.map((item) => (item.id === record.id ? record : item))
         : [record, ...prev.wageRecords];
       const nextState = { ...prev, wageRecords: nextWageRecords };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
       void saveAuxiliaryModulesToSupabaseMetadata({
         wageRecords: nextState.wageRecords,
         paymentWithdrawals: nextState.paymentWithdrawals,
@@ -641,11 +735,13 @@ export default function App() {
   };
 
   const handleDeleteWageRecord = (id: string) => {
+    markEntryDeletedInTombstones(id);
     setRepo((prev) => {
       const nextState = {
         ...prev,
         wageRecords: prev.wageRecords.filter((item) => item.id !== id),
       };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
       void saveAuxiliaryModulesToSupabaseMetadata({
         wageRecords: nextState.wageRecords,
         paymentWithdrawals: nextState.paymentWithdrawals,
@@ -667,6 +763,7 @@ export default function App() {
           )
         : [record, ...prev.paymentWithdrawals];
       const nextState = { ...prev, paymentWithdrawals: nextWithdrawals };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
       void saveAuxiliaryModulesToSupabaseMetadata({
         wageRecords: nextState.wageRecords,
         paymentWithdrawals: nextState.paymentWithdrawals,
@@ -679,11 +776,13 @@ export default function App() {
   };
 
   const handleDeleteWithdrawal = (id: string) => {
+    markEntryDeletedInTombstones(id);
     setRepo((prev) => {
       const nextState = {
         ...prev,
         paymentWithdrawals: prev.paymentWithdrawals.filter((item) => item.id !== id),
       };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
       void saveAuxiliaryModulesToSupabaseMetadata({
         wageRecords: nextState.wageRecords,
         paymentWithdrawals: nextState.paymentWithdrawals,
@@ -703,6 +802,7 @@ export default function App() {
         ? prev.loanRecords.map((item) => (item.id === loan.id ? loan : item))
         : [loan, ...prev.loanRecords];
       const nextState = { ...prev, loanRecords: nextLoans };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
       void saveAuxiliaryModulesToSupabaseMetadata({
         wageRecords: nextState.wageRecords,
         paymentWithdrawals: nextState.paymentWithdrawals,
@@ -715,11 +815,13 @@ export default function App() {
   };
 
   const handleDeleteLoan = (id: string) => {
+    markEntryDeletedInTombstones(id);
     setRepo((prev) => {
       const nextState = {
         ...prev,
         loanRecords: prev.loanRecords.filter((item) => item.id !== id),
       };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
       void saveAuxiliaryModulesToSupabaseMetadata({
         wageRecords: nextState.wageRecords,
         paymentWithdrawals: nextState.paymentWithdrawals,
@@ -739,6 +841,7 @@ export default function App() {
         ? prev.fundRecords.map((item) => (item.id === fund.id ? fund : item))
         : [fund, ...prev.fundRecords];
       const nextState = { ...prev, fundRecords: nextFunds };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
       void saveAuxiliaryModulesToSupabaseMetadata({
         wageRecords: nextState.wageRecords,
         paymentWithdrawals: nextState.paymentWithdrawals,
@@ -751,11 +854,13 @@ export default function App() {
   };
 
   const handleDeleteFund = (id: string) => {
+    markEntryDeletedInTombstones(id);
     setRepo((prev) => {
       const nextState = {
         ...prev,
         fundRecords: prev.fundRecords.filter((item) => item.id !== id),
       };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
       void saveAuxiliaryModulesToSupabaseMetadata({
         wageRecords: nextState.wageRecords,
         paymentWithdrawals: nextState.paymentWithdrawals,
@@ -777,6 +882,7 @@ export default function App() {
           )
         : [tx, ...prev.incomeExpenseRecords];
       const nextState = { ...prev, incomeExpenseRecords: nextTx };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
       void saveAuxiliaryModulesToSupabaseMetadata({
         wageRecords: nextState.wageRecords,
         paymentWithdrawals: nextState.paymentWithdrawals,
@@ -789,6 +895,7 @@ export default function App() {
   };
 
   const handleDeleteTransaction = (id: string) => {
+    markEntryDeletedInTombstones(id);
     setRepo((prev) => {
       const nextState = {
         ...prev,
@@ -796,6 +903,7 @@ export default function App() {
           (item) => item.id !== id
         ),
       };
+      saveCachedRepositoryState(currentUser?.id ?? null, nextState);
       void saveAuxiliaryModulesToSupabaseMetadata({
         wageRecords: nextState.wageRecords,
         paymentWithdrawals: nextState.paymentWithdrawals,
