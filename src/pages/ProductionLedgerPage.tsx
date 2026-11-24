@@ -834,7 +834,30 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       });
   }, [entries, filters]);
 
+  const hasProductionSpecificFilter = useMemo(() => {
+    return (
+      filters.settlementStatus !== 'ALL' ||
+      filters.workStatus !== 'ALL' ||
+      filters.category !== 'ALL' ||
+      filters.size !== 'ALL' ||
+      filters.color !== 'ALL' ||
+      filters.itemName !== 'ALL'
+    );
+  }, [
+    filters.settlementStatus,
+    filters.workStatus,
+    filters.category,
+    filters.size,
+    filters.color,
+    filters.itemName,
+  ]);
+
   const sortedFilteredWithdrawals = useMemo(() => {
+    // When filtering by production-only attributes (e.g., "রেট নিষ্পত্তি হয়নি"), strictly exclude bill withdrawals
+    if (hasProductionSpecificFilter) {
+      return [];
+    }
+
     const fromDt = parseAnyDateToDateObj(filters.dateFrom);
     const toDt = parseAnyDateToDateObj(filters.dateTo);
     const fromTime = fromDt
@@ -876,14 +899,21 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
         const dtB = parseAnyDateToDateObj(b.date)?.getTime() ?? 0;
         return dtB - dtA;
       });
-  }, [withdrawals, filters.dateFrom, filters.dateTo, filters.searchQuery]);
+  }, [
+    withdrawals,
+    filters.dateFrom,
+    filters.dateTo,
+    filters.searchQuery,
+    hasProductionSpecificFilter,
+    ledgerTab,
+  ]);
 
   type UnifiedLedgerFeedItem =
     | { kind: 'production'; entry: ProductionEntry; timestamp: number }
     | { kind: 'withdrawal'; record: PaymentWithdrawalRecord; timestamp: number };
 
   const unifiedLedgerFeed = useMemo((): UnifiedLedgerFeedItem[] => {
-    if (ledgerTab === 'production') {
+    if (ledgerTab === 'production' || hasProductionSpecificFilter) {
       return sortedFilteredEntries.map((entry) => ({
         kind: 'production',
         entry,
@@ -908,7 +938,12 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       timestamp: parseAnyDateToDateObj(record.date)?.getTime() ?? 0,
     }));
     return [...prods, ...withds].sort((a, b) => b.timestamp - a.timestamp);
-  }, [ledgerTab, sortedFilteredEntries, sortedFilteredWithdrawals]);
+  }, [
+    ledgerTab,
+    hasProductionSpecificFilter,
+    sortedFilteredEntries,
+    sortedFilteredWithdrawals,
+  ]);
 
   // Daily and Date-Range Production Summaries
   const filteredSummary = useMemo(() => {
