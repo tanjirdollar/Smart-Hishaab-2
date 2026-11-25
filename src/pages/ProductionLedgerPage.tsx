@@ -2198,9 +2198,19 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                       <button
                         type="button"
                         onClick={() => handleQuickToggleSettlementOnEntry(entry)}
-                        className="min-h-[32px] px-2.5 py-1 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                        className={`min-h-[32px] px-2.5 py-1 rounded-lg border text-[11px] font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs ${
+                          entry.settlementStatus === 'settled'
+                            ? 'border-emerald-400 dark:border-emerald-600/90 bg-emerald-50/90 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60'
+                            : 'border-rose-400 dark:border-rose-600/90 bg-rose-50/90 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/60'
+                        }`}
                       >
-                        <CheckCircle2 className="w-3 h-3" />
+                        <CheckCircle2
+                          className={`w-3.5 h-3.5 shrink-0 ${
+                            entry.settlementStatus === 'settled'
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : 'text-rose-600 dark:text-rose-400'
+                          }`}
+                        />
                         <span>
                           {entry.settlementStatus === 'settled'
                             ? 'রেট নিষ্পত্তি হয়েছে'
@@ -2383,20 +2393,22 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                               onClick={() =>
                                 handleQuickToggleSettlementOnEntry(entry)
                               }
-                              className={`min-h-[32px] px-2.5 py-1 rounded-lg border text-xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs ${
+                              className={`min-h-[32px] px-2.5 py-1 rounded-lg border text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs ${
                                 entry.settlementStatus === 'settled'
-                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600'
-                                  : 'bg-rose-600 hover:bg-rose-700 text-white border-rose-600'
+                                  ? 'border-emerald-400 dark:border-emerald-600/90 bg-emerald-50/90 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60'
+                                  : 'border-rose-400 dark:border-rose-600/90 bg-rose-50/90 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/60'
                               }`}
                             >
-                              {entry.settlementStatus === 'settled' ? (
-                                <CheckCircle2 className="w-3.5 h-3.5" />
-                              ) : (
-                                <AlertTriangle className="w-3.5 h-3.5" />
-                              )}
+                              <CheckCircle2
+                                className={`w-3.5 h-3.5 shrink-0 ${
+                                  entry.settlementStatus === 'settled'
+                                    ? 'text-emerald-600 dark:text-emerald-400'
+                                    : 'text-rose-600 dark:text-rose-400'
+                                }`}
+                              />
                               <span>
                                 {entry.settlementStatus === 'settled'
-                                  ? 'নিষ্পত্তি হয়েছে'
+                                  ? 'রেট নিষ্পত্তি হয়েছে'
                                   : 'রেট নিষ্পত্তি হয়নি'}
                               </span>
                             </button>
