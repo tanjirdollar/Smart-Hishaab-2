@@ -19,6 +19,7 @@ import {
   ShieldAlert,
   Sparkles,
   Square,
+  Timer,
   Trash2,
   X,
 } from 'lucide-react';
@@ -63,6 +64,10 @@ import {
   MultiPhotoUpload,
 } from '../components/ui/FormFields';
 import { ModalDrawer } from '../components/ui/ModalDrawer';
+import {
+  COUNTDOWN_PRESET_HOURS,
+  ProductionCountdownBadge,
+} from '../components/ui/ProductionCountdownDisplay';
 
 export interface ProductionLedgerPageProps {
   entries: ProductionEntry[];
@@ -91,6 +96,9 @@ interface ProductionFormDraft {
   settlementStatus: SettlementStatus;
   startWorkTime: string;
   endWorkTime: string;
+  countdownHours: string;
+  countdownMinutes: string;
+  countdownStartedAt: string | null;
   shortDescription: string;
   photos: UploadedPhotoPreview[];
   rawFiles: File[];
@@ -112,6 +120,9 @@ function createEmptyDraft(): ProductionFormDraft {
     settlementStatus: 'pending',
     startWorkTime: '',
     endWorkTime: '',
+    countdownHours: '',
+    countdownMinutes: '',
+    countdownStartedAt: null,
     shortDescription: '',
     photos: [],
     rawFiles: [],
@@ -271,6 +282,16 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
     [draft.startWorkTime, draft.endWorkTime]
   );
 
+  const parsedCountdownTotalMinutes = useMemo(() => {
+    const hrsClean = toAsciiDigits(draft.countdownHours).trim();
+    const minsClean = toAsciiDigits(draft.countdownMinutes).trim();
+    const hrs = hrsClean ? Number(hrsClean) : 0;
+    const mins = minsClean ? Number(minsClean) : 0;
+    const validHrs = Number.isFinite(hrs) && hrs > 0 ? Math.floor(hrs) : 0;
+    const validMins = Number.isFinite(mins) && mins > 0 ? Math.floor(mins) : 0;
+    return validHrs * 60 + validMins;
+  }, [draft.countdownHours, draft.countdownMinutes]);
+
   const handlePiecesChange = (val: string) => {
     const clean = toAsciiDigits(val).trim();
     const num = Number(clean);
@@ -382,6 +403,17 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       setAvailableColors((prev) => Array.from(new Set([...prev, ...colorsList])));
     }
 
+    const existingCountdownMins =
+      entry.countdownDurationMinutes && entry.countdownDurationMinutes > 0
+        ? Math.round(entry.countdownDurationMinutes)
+        : 0;
+    const cdHours =
+      existingCountdownMins > 0
+        ? String(Math.floor(existingCountdownMins / 60))
+        : '';
+    const cdMins =
+      existingCountdownMins > 0 ? String(existingCountdownMins % 60) : '';
+
     setDraft({
       id: entry.id,
       date: entry.date,
@@ -397,6 +429,9 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       settlementStatus: entry.settlementStatus ?? 'pending',
       startWorkTime: toDateTimeLocalInputValue(entry.startWorkTime),
       endWorkTime: toDateTimeLocalInputValue(entry.endWorkTime),
+      countdownHours: cdHours,
+      countdownMinutes: cdMins,
+      countdownStartedAt: entry.countdownStartedAt ?? null,
       shortDescription: entry.shortDescription,
       photos: entry.photos,
       rawFiles: [],
@@ -676,6 +711,25 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
     const finalPendingWage =
       finalSettlementStatus === 'settled' ? 0 : calculatedEarnedWage;
 
+    const nowIso = new Date().toISOString();
+    const shouldSaveCountdown =
+      draft.workStatus === 'in_progress' && parsedCountdownTotalMinutes > 0;
+    const finalCountdownDurationMinutes = shouldSaveCountdown
+      ? parsedCountdownTotalMinutes
+      : null;
+    const finalCountdownStartedAt = shouldSaveCountdown
+      ? draft.countdownStartedAt || nowIso
+      : null;
+    const startedMs = finalCountdownStartedAt
+      ? new Date(finalCountdownStartedAt).getTime()
+      : Date.now();
+    const validStartedMs = Number.isFinite(startedMs) ? startedMs : Date.now();
+    const finalDeadlineAt = shouldSaveCountdown
+      ? new Date(
+          validStartedMs + parsedCountdownTotalMinutes * 60 * 1000
+        ).toISOString()
+      : null;
+
     const record: ProductionEntry = {
       id: draft.id ?? `prod-${Date.now()}`,
       date: draft.date || getTodayDDMMYYYY(false),
@@ -694,12 +748,17 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
       pendingWage: finalPendingWage,
       workStatus: draft.workStatus,
       settlementStatus: finalSettlementStatus,
-      startWorkTime: draft.startWorkTime || null,
+      startWorkTime:
+        draft.startWorkTime ||
+        (shouldSaveCountdown ? getNowLocalDateTimeInput() : null),
       endWorkTime: draft.endWorkTime || null,
       workDurationMinutes: calculatedDurationMinutes,
+      countdownDurationMinutes: finalCountdownDurationMinutes,
+      countdownStartedAt: finalCountdownStartedAt,
+      deadlineAt: finalDeadlineAt,
       shortDescription: draft.shortDescription.trim(),
       photos: draft.photos,
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso,
     };
 
     setIsSaving(true);
@@ -1356,6 +1415,144 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
             ]}
           />
         </div>
+
+        {/* Countdown Timer & Target Deadline Configuration when workStatus === 'in_progress' */}
+        {draft.workStatus === 'in_progress' && (
+          <div className="rounded-xl border border-teal-200 dark:border-teal-800/80 bg-teal-50/50 dark:bg-teal-950/30 p-3.5 space-y-3 mt-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className="text-xs sm:text-sm font-bold text-teal-950 dark:text-teal-100 flex items-center gap-1.5">
+                  <Timer className="w-4 h-4 text-teal-600 dark:text-teal-400 shrink-0" />
+                  <span>কাউন্টডাউন সময় সেট করুন (লক্ষ্যমাত্রা ও ওভারডিউ ট্র্যাকার)</span>
+                </h4>
+                <p className="text-[11px] text-teal-800 dark:text-teal-300 mt-0.5">
+                  কাজটি শেষ করার লক্ষ্যমাত্রা নির্ধারণ করুন — সময় পার হলে স্বয়ংক্রিয় ওভারডিউ এবং মোট চলমান সময় দেখাবে
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {draft.countdownStartedAt && parsedCountdownTotalMinutes > 0 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        countdownStartedAt: new Date().toISOString(),
+                      }))
+                    }
+                    className="px-2.5 py-1 rounded-lg border border-teal-300 dark:border-teal-700 bg-white dark:bg-slate-900 text-[11px] font-bold text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/50 inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>পুনরায় শুরু</span>
+                  </button>
+                )}
+                {(parsedCountdownTotalMinutes > 0 || draft.countdownStartedAt) && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        countdownHours: '',
+                        countdownMinutes: '',
+                        countdownStartedAt: null,
+                      }))
+                    }
+                    className="px-2.5 py-1 rounded-lg border border-rose-200 dark:border-rose-800 bg-white dark:bg-slate-900 text-[11px] font-bold text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
+                  >
+                    টাইমার বন্ধ করুন
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Quick Preset Duration Chips */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 mr-1">
+                দ্রুত নির্বাচন:
+              </span>
+              {COUNTDOWN_PRESET_HOURS.map((preset) => {
+                const isSelected =
+                  parsedCountdownTotalMinutes === preset.hours * 60;
+                return (
+                  <button
+                    key={preset.hours}
+                    type="button"
+                    onClick={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        countdownHours: String(preset.hours),
+                        countdownMinutes: '0',
+                        countdownStartedAt:
+                          prev.countdownStartedAt || new Date().toISOString(),
+                      }))
+                    }
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
+                      isSelected
+                        ? 'bg-teal-700 text-white border-teal-700 shadow-2xs'
+                        : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-teal-500'
+                    }`}
+                  >
+                    {preset.labelBn}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Custom Hours and Minutes Input */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  লক্ষ্যমাত্রা ঘণ্টা (Hours)
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={draft.countdownHours}
+                  onChange={(e) =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      countdownHours: e.target.value,
+                      countdownStartedAt:
+                        prev.countdownStartedAt || new Date().toISOString(),
+                    }))
+                  }
+                  placeholder="যেমন: ১০"
+                  className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-bold text-slate-900 dark:text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  লক্ষ্যমাত্রা মিনিট (Minutes)
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={draft.countdownMinutes}
+                  onChange={(e) =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      countdownMinutes: e.target.value,
+                      countdownStartedAt:
+                        prev.countdownStartedAt || new Date().toISOString(),
+                    }))
+                  }
+                  placeholder="যেমন: ৩০"
+                  className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-bold text-slate-900 dark:text-white"
+                />
+              </div>
+              <div className="min-h-[40px] px-3 py-2 rounded-xl border border-teal-200 dark:border-teal-800 bg-white/90 dark:bg-slate-900/90 flex items-center justify-between text-xs">
+                <span className="text-slate-600 dark:text-slate-400 font-medium">
+                  নির্ধারিত সময়:
+                </span>
+                <strong className="text-teal-700 dark:text-teal-300 font-bold">
+                  {parsedCountdownTotalMinutes > 0
+                    ? formatDurationBn(parsedCountdownTotalMinutes)
+                    : 'সেট করা হয়নি'}
+                </strong>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Section E: Additional Information */}
@@ -1955,6 +2152,12 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                       )}
                     </div>
 
+                    {/* Live Countdown & Overdue Work Tracker Badge */}
+                    <ProductionCountdownBadge
+                      entry={entry}
+                      onQuickCompleteWork={handleQuickEndWorkOnEntry}
+                    />
+
                     {/* Additional Photo Strip if multiple photos uploaded */}
                     {validPhotos.length > 1 && (
                       <div className="flex items-center gap-1.5 overflow-x-auto py-0.5">
@@ -2156,6 +2359,12 @@ export const ProductionLedgerPage: React.FC<ProductionLedgerPageProps> = ({
                               )}
                             </strong>
                           </p>
+                          <div className="mt-2 min-w-[220px]">
+                            <ProductionCountdownBadge
+                              entry={entry}
+                              onQuickCompleteWork={handleQuickEndWorkOnEntry}
+                            />
+                          </div>
                         </td>
                         <td className="py-3.5 px-4 text-xs align-top">
                           <p className={`font-bold ${visual.workTextColor}`}>

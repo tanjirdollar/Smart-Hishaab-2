@@ -269,6 +269,13 @@ export function computeEntryModificationScore(
     score += 10;
   }
   if (
+    (entry.countdownDurationMinutes ?? null) !==
+      (bkp.countdownDurationMinutes ?? null) ||
+    (entry.deadlineAt ?? null) !== (bkp.deadlineAt ?? null)
+  ) {
+    score += 20;
+  }
+  if (
     cleanNoteForBackupComparison(entry.shortDescription) !==
     cleanNoteForBackupComparison(bkp.shortDescription)
   ) {
@@ -615,6 +622,9 @@ interface EmbeddedMetaPayload {
   st?: string | null;
   et?: string | null;
   dur?: number | null;
+  cdm?: number | null; // countdownDurationMinutes
+  csa?: string | null; // countdownStartedAt
+  dla?: string | null; // deadlineAt
   rw?: number | null;
   pw?: number | null;
   bid?: string;
@@ -771,6 +781,9 @@ export function mapSupabaseRowToProductionEntry(
       row.work_duration_minutes ??
       meta?.dur ??
       calculateDurationMinutes(startWorkTime, endWorkTime),
+    countdownDurationMinutes: meta?.cdm ?? null,
+    countdownStartedAt: meta?.csa ?? null,
+    deadlineAt: meta?.dla ?? null,
     shortDescription: cleanDescription,
     photos,
     importBatchId: row.import_batch_id ?? meta?.bid ?? undefined,
@@ -793,6 +806,20 @@ export function mapProductionEntryToSupabasePayload(
   const photoUrls = (entry.photos || [])
     .map((p) => p.storagePath || p.previewUrl)
     .filter((u) => u && !u.startsWith('blob:'));
+
+  const hasCountdownMeta =
+    (entry.countdownDurationMinutes !== null &&
+      entry.countdownDurationMinutes !== undefined &&
+      entry.countdownDurationMinutes > 0) ||
+    Boolean(entry.deadlineAt);
+
+  const descriptionForFullTable = hasCountdownMeta
+    ? packDescriptionWithMeta(entry.shortDescription, {
+        cdm: entry.countdownDurationMinutes ?? null,
+        csa: safeIsoTimestampOrNull(entry.countdownStartedAt),
+        dla: safeIsoTimestampOrNull(entry.deadlineAt),
+      })
+    : entry.shortDescription;
 
   const payload: Record<string, unknown> = {
     id: toDeterministicUuid(entry.id),
@@ -820,7 +847,7 @@ export function mapProductionEntryToSupabasePayload(
     start_work_time: safeIsoTimestampOrNull(entry.startWorkTime),
     end_work_time: safeIsoTimestampOrNull(entry.endWorkTime),
     work_duration_minutes: entry.workDurationMinutes,
-    short_description: entry.shortDescription,
+    short_description: descriptionForFullTable,
     photo_urls: photoUrls,
     import_batch_id: entry.importBatchId ?? null,
   };
@@ -848,6 +875,9 @@ function mapProductionEntryToLegacySupabasePayload(
     st: safeIsoTimestampOrNull(entry.startWorkTime),
     et: safeIsoTimestampOrNull(entry.endWorkTime),
     dur: entry.workDurationMinutes,
+    cdm: entry.countdownDurationMinutes ?? null,
+    csa: safeIsoTimestampOrNull(entry.countdownStartedAt),
+    dla: safeIsoTimestampOrNull(entry.deadlineAt),
     rw: entry.receivedWage,
     pw: entry.pendingWage,
     bid: entry.importBatchId,
@@ -1135,6 +1165,9 @@ export async function fetchProductionEntriesFromSupabase(
       Number(inSql.totalWage ?? 0) !== Number(winner.totalWage ?? 0) ||
       inSql.settlementStatus !== winner.settlementStatus ||
       inSql.workStatus !== winner.workStatus ||
+      (inSql.countdownDurationMinutes ?? null) !==
+        (winner.countdownDurationMinutes ?? null) ||
+      (inSql.deadlineAt ?? null) !== (winner.deadlineAt ?? null) ||
       (inSql.shortDescription || '').trim() !==
         (winner.shortDescription || '').trim()
     ) {

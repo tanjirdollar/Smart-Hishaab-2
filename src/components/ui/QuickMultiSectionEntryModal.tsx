@@ -6,6 +6,7 @@ import {
   HandCoins,
   PiggyBank,
   Scissors,
+  Timer,
   X,
 } from 'lucide-react';
 import {
@@ -17,6 +18,7 @@ import {
   SettlementStatus,
   WorkStatus,
 } from '../../types/models';
+import { COUNTDOWN_PRESET_HOURS } from './ProductionCountdownDisplay';
 
 const PRESET_CATEGORIES: string[] = ['কটি', 'গোলগোলা', 'শার্ট', 'প্যান্ট'];
 const PRESET_SIZES: string[] = [
@@ -34,8 +36,11 @@ const PRESET_SIZES: string[] = [
 ];
 import {
   formatCurrencyBDT,
+  formatDurationBn,
   formatNumberBn,
+  getNowLocalDateTimeInput,
   getTodayDDMMYYYY,
+  toAsciiDigits,
 } from '../../utils/formatters';
 import { DatePickerInput } from './DatePickerInput';
 
@@ -181,6 +186,8 @@ export const QuickMultiSectionEntryModal: React.FC<
     useState<WorkStatus>('completed');
   const [prodSettlementStatus, setProdSettlementStatus] =
     useState<SettlementStatus>('settled');
+  const [prodCountdownHours, setProdCountdownHours] = useState<string>('');
+  const [prodCountdownMinutes, setProdCountdownMinutes] = useState<string>('');
   const [prodNotes, setProdNotes] = useState<string>('');
 
   useEffect(() => {
@@ -209,6 +216,14 @@ export const QuickMultiSectionEntryModal: React.FC<
       prev.includes(sz) ? prev.filter((s) => s !== sz) : [...prev, sz]
     );
   };
+
+  const parsedCountdownTotalMinutes = (() => {
+    const hrs = Number(toAsciiDigits(prodCountdownHours).trim() || '0');
+    const mins = Number(toAsciiDigits(prodCountdownMinutes).trim() || '0');
+    const validHrs = Number.isFinite(hrs) && hrs > 0 ? Math.floor(hrs) : 0;
+    const validMins = Number.isFinite(mins) && mins > 0 ? Math.floor(mins) : 0;
+    return validHrs * 60 + validMins;
+  })();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -408,6 +423,19 @@ export const QuickMultiSectionEntryModal: React.FC<
       const finalSettlement: SettlementStatus =
         rate > 0 ? prodSettlementStatus : 'pending';
 
+      const nowIso = new Date().toISOString();
+      const hasCountdown =
+        prodWorkStatus === 'in_progress' && parsedCountdownTotalMinutes > 0;
+      const countdownDurationMinutes = hasCountdown
+        ? parsedCountdownTotalMinutes
+        : null;
+      const countdownStartedAt = hasCountdown ? nowIso : null;
+      const deadlineAt = hasCountdown
+        ? new Date(
+            Date.now() + parsedCountdownTotalMinutes * 60 * 1000
+          ).toISOString()
+        : null;
+
       setIsSaving(true);
       try {
         await onSaveProduction({
@@ -428,14 +456,20 @@ export const QuickMultiSectionEntryModal: React.FC<
           pendingWage: finalSettlement === 'settled' ? 0 : totalWage,
           workStatus: prodWorkStatus,
           settlementStatus: finalSettlement,
-          startWorkTime: null,
+          startWorkTime:
+            prodWorkStatus === 'in_progress' ? getNowLocalDateTimeInput() : null,
           endWorkTime: null,
           workDurationMinutes: null,
+          countdownDurationMinutes,
+          countdownStartedAt,
+          deadlineAt,
           shortDescription:
             prodNotes.trim() || `${prodItemName.trim()} (${pcs} পিস)`,
           photos: [],
-          createdAt: new Date().toISOString(),
+          createdAt: nowIso,
         });
+        setProdCountdownHours('');
+        setProdCountdownMinutes('');
         setSuccessMsg('প্রোডাকশন এন্ট্রি সংরক্ষিত হয়েছে!');
         setTimeout(onClose, 700);
       } finally {
@@ -1066,6 +1100,94 @@ export const QuickMultiSectionEntryModal: React.FC<
                 </div>
               </div>
 
+              {/* Countdown Timer Control when Work Status is In Progress */}
+              {prodWorkStatus === 'in_progress' && (
+                <div className="rounded-xl border border-teal-200 dark:border-teal-800/80 bg-teal-50/50 dark:bg-teal-950/30 p-3 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-teal-900 dark:text-teal-200 flex items-center gap-1.5">
+                      <Timer className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
+                      <span>কাউন্টডাউন সময় সেট করুন (ঐচ্ছিক)</span>
+                    </span>
+                    {parsedCountdownTotalMinutes > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProdCountdownHours('');
+                          setProdCountdownMinutes('');
+                        }}
+                        className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+                      >
+                        মুছুন
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5">
+                    {COUNTDOWN_PRESET_HOURS.map((preset) => {
+                      const isSelected =
+                        parsedCountdownTotalMinutes === preset.hours * 60;
+                      return (
+                        <button
+                          key={preset.hours}
+                          type="button"
+                          onClick={() => {
+                            setProdCountdownHours(String(preset.hours));
+                            setProdCountdownMinutes('0');
+                          }}
+                          className={`px-2 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                            isSelected
+                              ? 'bg-teal-700 text-white border-teal-700'
+                              : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-teal-500'
+                          }`}
+                        >
+                          {preset.labelBn}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-0.5">
+                        ঘণ্টা (Hours)
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={prodCountdownHours}
+                        onChange={(e) => setProdCountdownHours(e.target.value)}
+                        placeholder="যেমন: 10"
+                        className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-semibold"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-0.5">
+                        মিনিট (Minutes)
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="59"
+                        value={prodCountdownMinutes}
+                        onChange={(e) => setProdCountdownMinutes(e.target.value)}
+                        placeholder="যেমন: 30"
+                        className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-semibold"
+                      />
+                    </div>
+                  </div>
+
+                  {parsedCountdownTotalMinutes > 0 && (
+                    <p className="text-[11px] text-teal-800 dark:text-teal-300 font-medium">
+                      লক্ষ্যমাত্রা:{' '}
+                      <strong>
+                        {formatDurationBn(parsedCountdownTotalMinutes)}
+                      </strong>{' '}
+                      — সময় পার হলে স্বয়ংক্রিয় ওভারডিউ ও অতিরিক্ত সময় দেখাবে।
+                    </p>
+                  )}
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   সংক্ষিপ্ত নোট (ঐচ্ছিক)
@@ -1103,3 +1225,4 @@ export const QuickMultiSectionEntryModal: React.FC<
     </div>
   );
 };
+

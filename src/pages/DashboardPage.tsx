@@ -12,6 +12,10 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import {
+  DashboardActiveCountdownBanner,
+  ProductionCountdownBadge,
+} from '../components/ui/ProductionCountdownDisplay';
+import {
   QuickEntrySectionType,
   QuickMultiSectionEntryModal,
 } from '../components/ui/QuickMultiSectionEntryModal';
@@ -218,6 +222,13 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Live Active Work Countdown & Overdue Tracker Banner */}
+      <DashboardActiveCountdownBanner
+        productionEntries={recentProduction}
+        onNavigateToProduction={() => onNavigate(ModuleId.PRODUCTION)}
+        onSaveProduction={onSaveProduction}
+      />
 
       {/* Main Two Unified Cards: 1) This Week's Production, 2) Overall Wage & Company Receivable */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -500,47 +511,50 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   return (
                     <div
                       key={entry.id}
-                      className="py-2.5 flex items-center justify-between gap-2.5"
+                      className="py-2.5 space-y-2"
                     >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        {thumb ? (
-                          <img
-                            src={thumb}
-                            alt={entry.itemName}
-                            className="w-9 h-9 rounded-lg object-cover border border-slate-200 dark:border-slate-700 shrink-0"
-                          />
-                        ) : (
-                          <div className="w-9 h-9 rounded-lg bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 flex items-center justify-center shrink-0">
-                            <Scissors className="w-4 h-4" />
+                      <div className="flex items-center justify-between gap-2.5">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          {thumb ? (
+                            <img
+                              src={thumb}
+                              alt={entry.itemName}
+                              className="w-9 h-9 rounded-lg object-cover border border-slate-200 dark:border-slate-700 shrink-0"
+                            />
+                          ) : (
+                            <div className="w-9 h-9 rounded-lg bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 flex items-center justify-center shrink-0">
+                              <Scissors className="w-4 h-4" />
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                              {entry.itemName || entry.garmentType}
+                            </p>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                              {entry.date} · {formatNumberBn(entry.pieces)} পিস (
+                              {formatNumberBn(entry.dozens)} ডজন)
+                            </p>
                           </div>
-                        )}
-                        <div className="min-w-0">
-                          <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                            {entry.itemName || entry.garmentType}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="text-xs font-bold text-teal-700 dark:text-teal-300 font-mono">
+                            {formatCurrencyBDT(entry.totalWage)}
                           </p>
-                          <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                            {entry.date} · {formatNumberBn(entry.pieces)} পিস (
-                            {formatNumberBn(entry.dozens)} ডজন)
-                          </p>
+                          <StatusBadge
+                            label={
+                              entry.settlementStatus === 'settled'
+                                ? 'নিষ্পত্তি হয়েছে'
+                                : 'রেট নিষ্পত্তি হয়নি'
+                            }
+                            variant={
+                              entry.settlementStatus === 'settled'
+                                ? 'success'
+                                : 'warning'
+                            }
+                          />
                         </div>
                       </div>
-                      <div className="text-right shrink-0">
-                        <p className="text-xs font-bold text-teal-700 dark:text-teal-300 font-mono">
-                          {formatCurrencyBDT(entry.totalWage)}
-                        </p>
-                        <StatusBadge
-                          label={
-                            entry.settlementStatus === 'settled'
-                              ? 'নিষ্পত্তি হয়েছে'
-                              : 'রেট নিষ্পত্তি হয়নি'
-                          }
-                          variant={
-                            entry.settlementStatus === 'settled'
-                              ? 'success'
-                              : 'warning'
-                          }
-                        />
-                      </div>
+                      <ProductionCountdownBadge entry={entry} compact />
                     </div>
                   );
                 })}

@@ -431,6 +431,9 @@ export default function App() {
             Number(inCloud.totalWage ?? 0) !== Number(winner.totalWage ?? 0) ||
             inCloud.settlementStatus !== winner.settlementStatus ||
             inCloud.workStatus !== winner.workStatus ||
+            (inCloud.countdownDurationMinutes ?? null) !==
+              (winner.countdownDurationMinutes ?? null) ||
+            (inCloud.deadlineAt ?? null) !== (winner.deadlineAt ?? null) ||
             (inCloud.shortDescription || '').trim() !==
               (winner.shortDescription || '').trim()
           ) {

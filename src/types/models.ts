@@ -49,6 +49,9 @@ export interface ProductionEntry {
   startWorkTime: string | null; // ISO or YYYY-MM-DDTHH:mm
   endWorkTime: string | null; // ISO or YYYY-MM-DDTHH:mm
   workDurationMinutes: number | null; // Duration in minutes
+  countdownDurationMinutes?: number | null; // Target countdown duration in minutes (e.g., 600 for 10 hours)
+  countdownStartedAt?: string | null; // ISO timestamp when countdown started
+  deadlineAt?: string | null; // ISO target deadline timestamp (countdownStartedAt + countdownDurationMinutes)
   shortDescription: string; // Notes / সংক্ষিপ্ত বিবরণ
   photos: UploadedPhotoPreview[];
   importBatchId?: string;

@@ -349,6 +349,17 @@ export function parseSmartHisabBackupData(raw: RawSmartHisabBackupJson): {
       });
     }
 
+    const rawCountdownMins = cleanNumber(
+      row.CountdownDurationMinutes ?? row.countdownDurationMinutes
+    );
+    const countdownDurationMinutes =
+      rawCountdownMins > 0 ? Math.round(rawCountdownMins) : null;
+    const countdownStartedAt =
+      String(row.CountdownStartedAt || row.countdownStartedAt || '').trim() ||
+      null;
+    const deadlineAt =
+      String(row.DeadlineAt || row.deadlineAt || '').trim() || null;
+
     const candidateEntry: ProductionEntry = {
       id: canonicalUuid,
       date: dateDDMMYYYY,
@@ -370,6 +381,9 @@ export function parseSmartHisabBackupData(raw: RawSmartHisabBackupJson): {
       startWorkTime,
       endWorkTime,
       workDurationMinutes: null,
+      countdownDurationMinutes,
+      countdownStartedAt,
+      deadlineAt,
       shortDescription: cleanNote,
       photos,
     };
