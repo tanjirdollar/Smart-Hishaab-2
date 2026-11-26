@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
+  Copy,
   ExternalLink,
+  HelpCircle,
   LogOut,
   Scissors,
   ShieldCheck,
@@ -10,6 +12,7 @@ import {
 } from 'lucide-react';
 import {
   AuthenticatedUser,
+  getOAuthErrorFromUrl,
   getSupabaseConnectionState,
   signInWithGoogleSupabase,
   signOutSupabase,
@@ -30,7 +33,29 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const [authNoticeBn, setAuthNoticeBn] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(false);
+  const [showDomainHelp, setShowDomainHelp] = useState(false);
+  const [copiedText, setCopiedText] = useState<string | null>(null);
   const supabaseState = getSupabaseConnectionState();
+
+  const currentOrigin =
+    typeof window !== 'undefined' ? window.location.origin : '';
+
+  useEffect(() => {
+    const urlOAuthErr = getOAuthErrorFromUrl();
+    if (urlOAuthErr) {
+      setIsError(true);
+      setAuthNoticeBn(urlOAuthErr);
+      setShowDomainHelp(true);
+    }
+  }, []);
+
+  const handleCopyUrl = (val: string) => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      void navigator.clipboard.writeText(val);
+      setCopiedText(val);
+      setTimeout(() => setCopiedText(null), 2000);
+    }
+  };
 
   const handleGoogleLoginClick = async () => {
     setIsCheckingAuth(true);
@@ -39,6 +64,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       const response = await signInWithGoogleSupabase();
       setIsError(!response.ok);
       setAuthNoticeBn(response.messageBn);
+      if (!response.ok) {
+        setShowDomainHelp(true);
+      }
     } finally {
       setIsCheckingAuth(false);
     }
@@ -148,7 +176,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 {typeof window !== 'undefined' && window.self !== window.top && (
                   <div className="rounded-2xl border border-sky-200 dark:border-sky-900/60 bg-sky-50/80 dark:bg-sky-950/40 p-3.5 text-xs text-sky-900 dark:text-sky-200 space-y-2">
                     <p className="font-semibold flex items-center gap-1.5">
-                      <span>💡 গুগল নিরাপত্তা নির্দেশিকা:</span>
+                      <span>গুগল নিরাপত্তা নির্দেশিকা:</span>
                     </p>
                     <p className="leading-relaxed">
                       AI Studio-র প্রিভিউ ফ্রেমের (iframe) নিরাপত্তা পলিসির কারণে গুগল লগইন পেজ ফ্রেমের ভেতর সরাসরি লোড হওয়া ব্রাউজার দ্বারা ব্লক হতে পারে। গুগল একাউন্ট সংযোগ করতে সরাসরি নিচের বাটনে ট্যাপ করুন অথবা নতুন ট্যাবে অ্যাপটি খুলুন।
@@ -210,6 +238,73 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             </div>
           )}
 
+          {/* Vercel / Custom Domain Redirect URL Setup Helper */}
+          {!currentUser && (
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => setShowDomainHelp((prev) => !prev)}
+                className="w-full text-left text-xs font-semibold text-teal-700 dark:text-teal-400 hover:underline inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <HelpCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  Vercel বা নতুন ডোমেইন থেকে Google লগইন হচ্ছে না? সমাধান দেখুন
+                </span>
+              </button>
+
+              {showDomainHelp && (
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-950/80 p-3.5 text-xs space-y-2.5 text-slate-700 dark:text-slate-300">
+                  <p className="font-bold text-slate-900 dark:text-slate-100">
+                    সুপাবেস (Supabase) ড্যাশবোর্ডে এই ডোমেইনটি অনুমোদন করুন:
+                  </p>
+                  <ol className="list-decimal list-inside space-y-1.5 leading-relaxed">
+                    <li>
+                      <strong>Supabase Dashboard</strong> →{' '}
+                      <strong>Authentication</strong> →{' '}
+                      <strong>URL Configuration</strong>-এ যান।
+                    </li>
+                    <li>
+                      <strong>Redirect URLs</strong> তালিকায় নিচের URL দুটি যুক্ত করে{' '}
+                      <strong>Save</strong> করুন:
+                    </li>
+                  </ol>
+
+                  {currentOrigin && (
+                    <div className="space-y-1.5 pt-1">
+                      {[
+                        `${currentOrigin}/**`,
+                        'https://*-tanjir4.vercel.app/**',
+                      ].map((urlItem) => (
+                        <div
+                          key={urlItem}
+                          className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 font-mono text-[11px]"
+                        >
+                          <span className="truncate">{urlItem}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyUrl(urlItem)}
+                            className="px-2 py-0.5 rounded bg-teal-50 dark:bg-teal-950 text-teal-700 dark:text-teal-300 font-sans font-bold text-[10px] shrink-0 cursor-pointer inline-flex items-center gap-1"
+                          >
+                            <Copy className="w-3 h-3" />
+                            <span>
+                              {copiedText === urlItem ? 'কপি হয়েছে' : 'কপি'}
+                            </span>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed pt-1">
+                    নোট: Vercel-এর <strong>Environment Variables</strong>-এ{' '}
+                    <code className="font-mono">VITE_SUPABASE_URL</code> এবং{' '}
+                    <code className="font-mono">VITE_SUPABASE_ANON_KEY</code> সেট করা থাকতে হবে।
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Security & Architecture Guarantees */}
           <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-2 text-xs text-slate-500 dark:text-slate-400">
             <div className="flex items-center gap-2">
@@ -231,3 +326,4 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     </div>
   );
 };
+

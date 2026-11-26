@@ -53,6 +53,36 @@ export function getSupabaseConnectionState(): SupabaseConnectionState {
 }
 
 /**
+ * Checks if the current URL contains an OAuth error returned by Supabase or Google.
+ */
+export function getOAuthErrorFromUrl(): string | null {
+  if (typeof window === 'undefined') return null;
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(
+    window.location.hash.startsWith('#')
+      ? window.location.hash.slice(1)
+      : window.location.hash
+  );
+
+  const errorCode =
+    searchParams.get('error_code') ||
+    hashParams.get('error_code') ||
+    searchParams.get('error') ||
+    hashParams.get('error');
+  const errorDesc =
+    searchParams.get('error_description') ||
+    hashParams.get('error_description');
+
+  if (!errorCode && !errorDesc) return null;
+  const decodedDesc = errorDesc
+    ? decodeURIComponent(errorDesc.replace(/\+/g, ' '))
+    : '';
+  return decodedDesc
+    ? `Google OAuth ত্রুটি (${errorCode || 'error'}): ${decodedDesc}`
+    : `Google OAuth ত্রুটি: ${errorCode}`;
+}
+
+/**
  * Initiates Google OAuth login via Supabase Auth.
  */
 export async function signInWithGoogleSupabase(): Promise<{
@@ -63,11 +93,13 @@ export async function signInWithGoogleSupabase(): Promise<{
     return {
       ok: false,
       messageBn:
-        'সুপাবেস (Supabase) প্রজেক্ট URL এবং Publishable/Anon Key এখনও কনফিগার করা হয়নি। Vercel-এ VITE_SUPABASE_URL এবং VITE_SUPABASE_PUBLISHABLE_KEY সেট করে Redeploy করুন।',
+        'সুপাবেস (Supabase) প্রজেক্ট URL এবং Publishable/Anon Key এখনও কনফিগার করা হয়নি। Vercel-এ VITE_SUPABASE_URL এবং VITE_SUPABASE_ANON_KEY (অথবা VITE_SUPABASE_PUBLISHABLE_KEY) সেট করে Redeploy করুন।',
     };
   }
 
-  const redirectTo = window.location.origin;
+  const currentOrigin =
+    typeof window !== 'undefined' ? window.location.origin : '';
+  const redirectTo = currentOrigin ? `${currentOrigin}/` : undefined;
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
@@ -75,7 +107,7 @@ export async function signInWithGoogleSupabase(): Promise<{
       redirectTo,
       queryParams: {
         access_type: 'offline',
-        prompt: 'consent',
+        prompt: 'select_account',
       },
     },
   });
@@ -83,17 +115,19 @@ export async function signInWithGoogleSupabase(): Promise<{
   if (error) {
     return {
       ok: false,
-      messageBn: `Google লগইন ত্রুটি: ${error.message}`,
+      messageBn: `Google লগইন ত্রুটি: ${error.message}। সুপাবেস ড্যাশবোর্ডে Authentication -> URL Configuration -> Redirect URLs-এ "${currentOrigin}/**" যুক্ত আছে কিনা যাচাই করুন।`,
     };
   }
 
   if (data?.url) {
-    const isInsideIframe = typeof window !== 'undefined' && window.self !== window.top;
+    const isInsideIframe =
+      typeof window !== 'undefined' && window.self !== window.top;
     if (isInsideIframe) {
       window.open(data.url, '_blank');
       return {
         ok: true,
-        messageBn: 'Google লগইন পাতা নতুন উইন্ডো/ট্যাবে খোলা হয়েছে। লগইন সম্পন্ন করে এখানে ফিরে আসুন।',
+        messageBn:
+          'Google লগইন পাতা নতুন উইন্ডো/ট্যাবে খোলা হয়েছে। লগইন সম্পন্ন করে এখানে ফিরে আসুন।',
       };
     } else {
       window.location.href = data.url;
