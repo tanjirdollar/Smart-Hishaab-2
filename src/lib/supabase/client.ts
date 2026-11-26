@@ -238,16 +238,15 @@ export async function signInWithGoogleSupabase(): Promise<{
 
   const currentOrigin =
     typeof window !== 'undefined' ? window.location.origin : '';
-  const redirectTo = currentOrigin || undefined;
+  const redirectTo = currentOrigin ? `${currentOrigin}/` : undefined;
+  const isInsideIframe =
+    typeof window !== 'undefined' && window.self !== window.top;
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
       redirectTo,
-      skipBrowserRedirect: true,
-      queryParams: {
-        prompt: 'select_account',
-      },
+      skipBrowserRedirect: isInsideIframe,
     },
   });
 
@@ -258,22 +257,16 @@ export async function signInWithGoogleSupabase(): Promise<{
     };
   }
 
-  if (data?.url) {
-    const isInsideIframe =
-      typeof window !== 'undefined' && window.self !== window.top;
-    if (isInsideIframe) {
-      const popup = window.open(data.url, '_blank', 'noopener,noreferrer');
-      if (!popup) {
-        window.location.assign(data.url);
-      }
-      return {
-        ok: true,
-        messageBn:
-          'Google লগইন পাতা নতুন ট্যাবে খোলা হয়েছে। লগইন সম্পন্ন করে এই ট্যাবে ফিরে আসুন।',
-      };
-    } else {
+  if (isInsideIframe && data?.url) {
+    const popup = window.open(data.url, '_blank', 'noopener,noreferrer');
+    if (!popup) {
       window.location.assign(data.url);
     }
+    return {
+      ok: true,
+      messageBn:
+        'Google লগইন পাতা নতুন ট্যাবে খোলা হয়েছে। লগইন সম্পন্ন করে এই ট্যাবে ফিরে আসুন।',
+    };
   }
 
   return {
