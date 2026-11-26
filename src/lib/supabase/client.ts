@@ -209,9 +209,23 @@ export function getOAuthErrorFromUrl(): string | null {
     hashParams.get('error_description');
 
   if (!errorCode && !errorDesc) return null;
+
+  // Clean the stale error parameters from the browser address bar immediately
+  // so refreshing or retrying login starts from a clean URL without breaking Supabase Auth.
+  try {
+    window.history.replaceState({}, document.title, window.location.pathname);
+  } catch {
+    // ignore history replace errors
+  }
+
   const decodedDesc = errorDesc
     ? decodeURIComponent(errorDesc.replace(/\+/g, ' '))
     : '';
+
+  if (errorCode === 'bad_oauth_state') {
+    return 'পূর্বের লগইন সেশনের মেয়াদ শেষ হয়েছিল বা অন্য ডোমেইন থেকে রিডাইরেক্ট হয়েছিল (bad_oauth_state)। URL পরিষ্কার করা হয়েছে — অনুগ্রহ করে এখন আবার "Google দিয়ে লগইন করুন" বাটনে চাপ দিন।';
+  }
+
   return decodedDesc
     ? `Google OAuth ত্রুটি (${errorCode || 'error'}): ${decodedDesc}`
     : `Google OAuth ত্রুটি: ${errorCode}`;
@@ -236,17 +250,50 @@ export async function signInWithGoogleSupabase(): Promise<{
     };
   }
 
+  if (
+    typeof window !== 'undefined' &&
+    (window.location.search.includes('error=') ||
+      window.location.hash.includes('error='))
+  ) {
+    try {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } catch {
+      // ignore
+    }
+  }
+
   const currentOrigin =
     typeof window !== 'undefined' ? window.location.origin : '';
   const redirectTo = currentOrigin ? `${currentOrigin}/` : undefined;
   const isInsideIframe =
     typeof window !== 'undefined' && window.self !== window.top;
 
+  if (!isInsideIframe) {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo,
+      },
+    });
+
+    if (error) {
+      return {
+        ok: false,
+        messageBn: `Google লগইন ত্রুটি: ${error.message}। সুপাবেস ড্যাশবোর্ডে Authentication -> URL Configuration -> Redirect URLs-এ "${currentOrigin}" এবং "${currentOrigin}/**" যুক্ত আছে কিনা যাচাই করুন।`,
+      };
+    }
+
+    return {
+      ok: true,
+      messageBn: 'Google লগইন পাতায় রিডাইরেক্ট করা হচ্ছে...',
+    };
+  }
+
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
       redirectTo,
-      skipBrowserRedirect: isInsideIframe,
+      skipBrowserRedirect: true,
     },
   });
 
@@ -257,10 +304,14 @@ export async function signInWithGoogleSupabase(): Promise<{
     };
   }
 
-  if (isInsideIframe && data?.url) {
-    const popup = window.open(data.url, '_blank', 'noopener,noreferrer');
+  if (data?.url) {
+    const cleanUrl = data.url
+      .replace(/([?&])skip_http_redirect=true(&?)/, (_m, p1, p2) =>
+        p1 === '?' && p2 === '&' ? '?' : p2 ? p1 : ''
+      );
+    const popup = window.open(cleanUrl, '_blank', 'noopener,noreferrer');
     if (!popup) {
-      window.location.assign(data.url);
+      window.location.assign(cleanUrl);
     }
     return {
       ok: true,
