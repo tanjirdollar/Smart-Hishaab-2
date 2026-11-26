@@ -5,26 +5,157 @@ import { SupabaseConnectionState } from '../../types/models';
  * Supabase Client & Google OAuth Authentication Layer
  */
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY) as string | undefined;
+const RUNTIME_SUPABASE_CONFIG_KEY = 'smart_hisab_supabase_runtime_config_v1';
 
-const isConfigured = Boolean(
-  supabaseUrl &&
-    supabaseUrl.trim().length > 0 &&
-    supabaseAnonKey &&
-    supabaseAnonKey.trim().length > 0
-);
+interface RuntimeSupabaseConfig {
+  url: string;
+  anonKey: string;
+}
 
-export const supabase: SupabaseClient | null = isConfigured
-  ? createClient(supabaseUrl!.trim(), supabaseAnonKey!.trim(), {
+function readEnvSupabaseUrl(): string {
+  const env = import.meta.env as Record<string, string | undefined>;
+  return (
+    env.VITE_SUPABASE_URL ||
+    env.NEXT_PUBLIC_SUPABASE_URL ||
+    env.SUPABASE_URL ||
+    ''
+  ).trim();
+}
+
+function readEnvSupabaseKey(): string {
+  const env = import.meta.env as Record<string, string | undefined>;
+  return (
+    env.VITE_SUPABASE_ANON_KEY ||
+    env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ||
+    env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    env.SUPABASE_ANON_KEY ||
+    env.SUPABASE_PUBLISHABLE_KEY ||
+    ''
+  ).trim();
+}
+
+export function getRuntimeSupabaseConfig(): RuntimeSupabaseConfig | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(RUNTIME_SUPABASE_CONFIG_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<RuntimeSupabaseConfig>;
+    if (
+      parsed &&
+      typeof parsed.url === 'string' &&
+      parsed.url.trim().startsWith('https://') &&
+      typeof parsed.anonKey === 'string' &&
+      parsed.anonKey.trim().length > 10
+    ) {
+      return {
+        url: parsed.url.trim(),
+        anonKey: parsed.anonKey.trim(),
+      };
+    }
+  } catch {
+    // ignore malformed localStorage
+  }
+  return null;
+}
+
+function resolveActiveCredentials(): {
+  url: string;
+  anonKey: string;
+  source: 'env' | 'runtime' | 'none';
+} {
+  const runtimeCfg = getRuntimeSupabaseConfig();
+  if (runtimeCfg) {
+    return {
+      url: runtimeCfg.url,
+      anonKey: runtimeCfg.anonKey,
+      source: 'runtime',
+    };
+  }
+  const envUrl = readEnvSupabaseUrl();
+  const envKey = readEnvSupabaseKey();
+  if (envUrl && envKey) {
+    return {
+      url: envUrl,
+      anonKey: envKey,
+      source: 'env',
+    };
+  }
+  return { url: '', anonKey: '', source: 'none' };
+}
+
+function createSupabaseInstance(): SupabaseClient | null {
+  const { url, anonKey } = resolveActiveCredentials();
+  if (!url || !anonKey) return null;
+  try {
+    return createClient(url, anonKey, {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: true,
       },
-    })
-  : null;
+    });
+  } catch {
+    return null;
+  }
+}
+
+export let supabase: SupabaseClient | null = createSupabaseInstance();
+
+export function configureRuntimeSupabase(
+  url: string,
+  anonKey: string
+): { ok: boolean; messageBn: string } {
+  const cleanUrl = url.trim().replace(/\/+$/, '');
+  const cleanKey = anonKey.trim();
+
+  if (!cleanUrl.startsWith('https://') || !cleanUrl.includes('.supabase.co')) {
+    return {
+      ok: false,
+      messageBn:
+        'সঠিক Supabase Project URL লিখুন (যেমন: https://xxxx.supabase.co)।',
+    };
+  }
+  if (cleanKey.length < 15) {
+    return {
+      ok: false,
+      messageBn: 'সঠিক Supabase Anon / Publishable Key প্রদান করুন।',
+    };
+  }
+
+  try {
+    localStorage.setItem(
+      RUNTIME_SUPABASE_CONFIG_KEY,
+      JSON.stringify({ url: cleanUrl, anonKey: cleanKey })
+    );
+    supabase = createSupabaseInstance();
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('smart-hisab-supabase-reconfigured'));
+    }
+    return {
+      ok: true,
+      messageBn:
+        'সুপাবেস সংযোগ সফলভাবে সক্রিয় হয়েছে! এখন Google দিয়ে লগইন করতে পারবেন।',
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      messageBn: `সংরক্ষণে ত্রুটি: ${err instanceof Error ? err.message : 'অজানা ত্রুটি'}`,
+    };
+  }
+}
+
+export function clearRuntimeSupabaseConfig(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(RUNTIME_SUPABASE_CONFIG_KEY);
+    supabase = createSupabaseInstance();
+    window.dispatchEvent(new CustomEvent('smart-hisab-supabase-reconfigured'));
+  } catch {
+    // ignore
+  }
+}
 
 export const SUPABASE_TABLES = {
   OPERATOR_PROFILES: 'operator_profiles',
@@ -41,14 +172,18 @@ export const SUPABASE_STORAGE_BUCKETS = {
 } as const;
 
 export function getSupabaseConnectionState(): SupabaseConnectionState {
+  const { url, source } = resolveActiveCredentials();
+  const active = Boolean(supabase && url);
   return {
-    isConfigured,
-    projectUrl: isConfigured ? supabaseUrl!.trim() : null,
+    isConfigured: active,
+    projectUrl: active ? url : null,
     authProvider: 'google',
     storageBucket: SUPABASE_STORAGE_BUCKETS.PRODUCTION_PHOTOS,
-    statusMessageBn: isConfigured
-      ? 'সুপাবেস ক্লাউড কনফিগারেশন সক্রিয় রয়েছে'
-      : 'সুপাবেস ডাটাবেস এখনও সংযুক্ত করা হয়নি (VITE_SUPABASE_URL ও Key সেট করুন)',
+    statusMessageBn: active
+      ? source === 'runtime'
+        ? `সুপাবেস ক্লাউড সংযুক্ত (${url})`
+        : 'সুপাবেস ক্লাউড কনফিগারেশন সক্রিয় রয়েছে'
+      : 'সুপাবেস ডাটাবেস এখনও সংযুক্ত করা হয়নি (নিচে Project URL ও Key সেট করুন)',
   };
 }
 
@@ -90,23 +225,27 @@ export async function signInWithGoogleSupabase(): Promise<{
   messageBn: string;
 }> {
   if (!supabase) {
+    supabase = createSupabaseInstance();
+  }
+
+  if (!supabase) {
     return {
       ok: false,
       messageBn:
-        'সুপাবেস (Supabase) প্রজেক্ট URL এবং Publishable/Anon Key এখনও কনফিগার করা হয়নি। Vercel-এ VITE_SUPABASE_URL এবং VITE_SUPABASE_ANON_KEY (অথবা VITE_SUPABASE_PUBLISHABLE_KEY) সেট করে Redeploy করুন।',
+        'সুপাবেস (Supabase) প্রজেক্ট URL এবং Publishable/Anon Key এখনও কনফিগার করা হয়নি। নিচের বক্সে আপনার Supabase Project URL ও Anon Key দিয়ে সংরক্ষণ করুন অথবা Vercel Environment Variables সেট করুন।',
     };
   }
 
   const currentOrigin =
     typeof window !== 'undefined' ? window.location.origin : '';
-  const redirectTo = currentOrigin ? `${currentOrigin}/` : undefined;
+  const redirectTo = currentOrigin || undefined;
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
       redirectTo,
+      skipBrowserRedirect: true,
       queryParams: {
-        access_type: 'offline',
         prompt: 'select_account',
       },
     },
@@ -115,7 +254,7 @@ export async function signInWithGoogleSupabase(): Promise<{
   if (error) {
     return {
       ok: false,
-      messageBn: `Google লগইন ত্রুটি: ${error.message}। সুপাবেস ড্যাশবোর্ডে Authentication -> URL Configuration -> Redirect URLs-এ "${currentOrigin}/**" যুক্ত আছে কিনা যাচাই করুন।`,
+      messageBn: `Google লগইন ত্রুটি: ${error.message}। সুপাবেস ড্যাশবোর্ডে Authentication -> URL Configuration -> Redirect URLs-এ "${currentOrigin}" এবং "${currentOrigin}/**" যুক্ত আছে কিনা যাচাই করুন।`,
     };
   }
 
@@ -123,14 +262,17 @@ export async function signInWithGoogleSupabase(): Promise<{
     const isInsideIframe =
       typeof window !== 'undefined' && window.self !== window.top;
     if (isInsideIframe) {
-      window.open(data.url, '_blank');
+      const popup = window.open(data.url, '_blank', 'noopener,noreferrer');
+      if (!popup) {
+        window.location.assign(data.url);
+      }
       return {
         ok: true,
         messageBn:
-          'Google লগইন পাতা নতুন উইন্ডো/ট্যাবে খোলা হয়েছে। লগইন সম্পন্ন করে এখানে ফিরে আসুন।',
+          'Google লগইন পাতা নতুন ট্যাবে খোলা হয়েছে। লগইন সম্পন্ন করে এই ট্যাবে ফিরে আসুন।',
       };
     } else {
-      window.location.href = data.url;
+      window.location.assign(data.url);
     }
   }
 

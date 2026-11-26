@@ -655,36 +655,98 @@ export default function App() {
 
     void initializeApplication();
 
-    if (!supabase) {
-      return () => {
-        isMounted = false;
-      };
-    }
+    let currentSubscription: { unsubscribe: () => void } | null = null;
 
-    const { data: authListener } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        if (!isMounted) return;
-        const usr = session?.user ?? null;
-        setCurrentUser(usr);
+    const attachAuthListener = () => {
+      if (currentSubscription) {
+        currentSubscription.unsubscribe();
+        currentSubscription = null;
+      }
+      if (!supabase) return;
 
-        // Ignore USER_UPDATED and TOKEN_REFRESHED events so saving/deleting metadata
-        // via supabase.auth.updateUser() never triggers a background reload race condition!
-        if (event === 'USER_UPDATED' || event === 'TOKEN_REFRESHED') {
-          return;
+      const { data: authListener } = supabase.auth.onAuthStateChange(
+        (event, session) => {
+          if (!isMounted) return;
+          const usr = session?.user ?? null;
+          setCurrentUser(usr);
+
+          if (
+            event === 'SIGNED_IN' &&
+            typeof window !== 'undefined' &&
+            (window.location.hash.includes('access_token=') ||
+              window.location.search.includes('code='))
+          ) {
+            window.history.replaceState(
+              {},
+              document.title,
+              window.location.pathname
+            );
+          }
+
+          // Ignore USER_UPDATED and TOKEN_REFRESHED events so saving/deleting metadata
+          // via supabase.auth.updateUser() never triggers a background reload race condition!
+          if (event === 'USER_UPDATED' || event === 'TOKEN_REFRESHED') {
+            return;
+          }
+
+          if (usr && lastLoadedUserIdRef.current !== usr.id) {
+            lastLoadedUserIdRef.current = usr.id;
+            void loadCloudRecordsForUser(usr);
+          } else if (!usr) {
+            lastLoadedUserIdRef.current = null;
+          }
         }
+      );
 
+      currentSubscription = authListener.subscription;
+    };
+
+    attachAuthListener();
+
+    const handleReconfigured = () => {
+      attachAuthListener();
+      if (supabase) {
+        void supabase.auth.getSession().then(({ data }) => {
+          if (!isMounted) return;
+          const usr = data.session?.user ?? null;
+          setCurrentUser(usr);
+          if (usr && lastLoadedUserIdRef.current !== usr.id) {
+            lastLoadedUserIdRef.current = usr.id;
+            void loadCloudRecordsForUser(usr);
+          }
+        });
+      }
+    };
+
+    const handleWindowFocus = () => {
+      if (!supabase) return;
+      void supabase.auth.getSession().then(({ data }) => {
+        if (!isMounted) return;
+        const usr = data.session?.user ?? null;
         if (usr && lastLoadedUserIdRef.current !== usr.id) {
+          setCurrentUser(usr);
           lastLoadedUserIdRef.current = usr.id;
           void loadCloudRecordsForUser(usr);
-        } else if (!usr) {
-          lastLoadedUserIdRef.current = null;
         }
-      }
+      });
+    };
+
+    window.addEventListener(
+      'smart-hisab-supabase-reconfigured',
+      handleReconfigured
     );
+    window.addEventListener('focus', handleWindowFocus);
 
     return () => {
       isMounted = false;
-      authListener.subscription.unsubscribe();
+      window.removeEventListener(
+        'smart-hisab-supabase-reconfigured',
+        handleReconfigured
+      );
+      window.removeEventListener('focus', handleWindowFocus);
+      if (currentSubscription) {
+        currentSubscription.unsubscribe();
+      }
     };
   }, [loadCloudRecordsForUser]);
 

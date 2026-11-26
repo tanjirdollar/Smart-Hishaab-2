@@ -45,12 +45,14 @@ export default defineConfig(() => {
         },
         workbox: {
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+          navigateFallbackDenylist: [/^\/api\//, /^\/auth\//],
         },
         devOptions: {
           enabled: false,
         },
       }),
     ],
+    envPrefix: ['VITE_', 'NEXT_PUBLIC_', 'SUPABASE_'],
     resolve: {
       alias: {
         '@': path.resolve('.'),
