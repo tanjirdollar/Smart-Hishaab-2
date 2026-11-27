@@ -12,28 +12,32 @@ interface RuntimeSupabaseConfig {
   anonKey: string;
 }
 
-function readEnvSupabaseUrl(): string {
+function resolveEnvCredentialsPair(): { url: string; anonKey: string } {
   const env = import.meta.env as Record<string, string | undefined>;
-  return (
-    env.VITE_SUPABASE_URL ||
-    env.NEXT_PUBLIC_SUPABASE_URL ||
-    env.SUPABASE_URL ||
-    ''
-  ).trim();
-}
-
-function readEnvSupabaseKey(): string {
-  const env = import.meta.env as Record<string, string | undefined>;
-  return (
+  const viteUrl = (env.VITE_SUPABASE_URL || '').trim();
+  const viteKey = (
     env.VITE_SUPABASE_ANON_KEY ||
     env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    ''
+  ).trim();
+
+  if (viteUrl && viteKey) {
+    return { url: viteUrl, anonKey: viteKey };
+  }
+
+  const nextUrl = (env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+  const nextKey = (
     env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
     env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ||
     env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-    env.SUPABASE_ANON_KEY ||
-    env.SUPABASE_PUBLISHABLE_KEY ||
     ''
   ).trim();
+
+  if (nextUrl && nextKey) {
+    return { url: nextUrl, anonKey: nextKey };
+  }
+
+  return { url: '', anonKey: '' };
 }
 
 export function getRuntimeSupabaseConfig(): RuntimeSupabaseConfig | null {
@@ -73,8 +77,7 @@ function resolveActiveCredentials(): {
       source: 'runtime',
     };
   }
-  const envUrl = readEnvSupabaseUrl();
-  const envKey = readEnvSupabaseKey();
+  const { url: envUrl, anonKey: envKey } = resolveEnvCredentialsPair();
   if (envUrl && envKey) {
     return {
       url: envUrl,
@@ -84,6 +87,79 @@ function resolveActiveCredentials(): {
   }
   return { url: '', anonKey: '', source: 'none' };
 }
+
+function formatOAuthErrorMessage(
+  errorCode: string | null,
+  errorDesc: string | null
+): string {
+  const decodedDesc = errorDesc
+    ? decodeURIComponent(errorDesc.replace(/\+/g, ' '))
+    : '';
+
+  if (errorCode === 'bad_oauth_state') {
+    return 'পূর্বের লগইন সেশনের মেয়াদ শেষ হয়েছিল বা ডুপ্লিকেট রিডাইরেক্ট হয়েছিল (bad_oauth_state)। URL পরিষ্কার করা হয়েছে — অনুগ্রহ করে এখন আবার "Google দিয়ে লগইন করুন" বাটনে একবার চাপ দিন।';
+  }
+
+  return decodedDesc
+    ? `Google OAuth ত্রুটি (${errorCode || 'error'}): ${decodedDesc}`
+    : `Google OAuth ত্রুটি: ${errorCode}`;
+}
+
+let capturedInitialOAuthError: string | null = null;
+
+/**
+ * Sanitizes stale OAuth error query parameters BEFORE GoTrueClient initializes.
+ * If the URL contains a valid `#access_token=` or `?code=` alongside stale `?error=` params,
+ * stripping the stale `?error=` params prevents GoTrueClient._getSessionFromURL() from
+ * rejecting the valid token.
+ */
+function sanitizeUrlBeforeSupabaseInit(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const searchParams = new URLSearchParams(window.location.search);
+    const rawHash = window.location.hash.startsWith('#')
+      ? window.location.hash.slice(1)
+      : window.location.hash;
+    const hashParams = new URLSearchParams(rawHash);
+
+    const hasValidAuthPayload =
+      hashParams.has('access_token') ||
+      searchParams.has('access_token') ||
+      searchParams.has('code');
+
+    const searchErrorCode =
+      searchParams.get('error_code') || searchParams.get('error');
+    const searchErrorDesc = searchParams.get('error_description');
+    const hashErrorCode =
+      hashParams.get('error_code') || hashParams.get('error');
+    const hashErrorDesc = hashParams.get('error_description');
+
+    if (hasValidAuthPayload && (searchErrorCode || searchErrorDesc)) {
+      searchParams.delete('error');
+      searchParams.delete('error_code');
+      searchParams.delete('error_description');
+      const cleanSearch = searchParams.toString();
+      const nextUrl =
+        window.location.pathname +
+        (cleanSearch ? `?${cleanSearch}` : '') +
+        window.location.hash;
+      window.history.replaceState({}, document.title, nextUrl);
+      return;
+    }
+
+    const errorCode = searchErrorCode || hashErrorCode;
+    const errorDesc = searchErrorDesc || hashErrorDesc;
+
+    if (!hasValidAuthPayload && (errorCode || errorDesc)) {
+      capturedInitialOAuthError = formatOAuthErrorMessage(errorCode, errorDesc);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  } catch {
+    // ignore URL parsing or history replace errors
+  }
+}
+
+sanitizeUrlBeforeSupabaseInit();
 
 function createSupabaseInstance(): SupabaseClient | null {
   const { url, anonKey } = resolveActiveCredentials();
@@ -191,6 +267,12 @@ export function getSupabaseConnectionState(): SupabaseConnectionState {
  * Checks if the current URL contains an OAuth error returned by Supabase or Google.
  */
 export function getOAuthErrorFromUrl(): string | null {
+  if (capturedInitialOAuthError) {
+    const msg = capturedInitialOAuthError;
+    capturedInitialOAuthError = null;
+    return msg;
+  }
+
   if (typeof window === 'undefined') return null;
   const searchParams = new URLSearchParams(window.location.search);
   const hashParams = new URLSearchParams(
@@ -210,26 +292,16 @@ export function getOAuthErrorFromUrl(): string | null {
 
   if (!errorCode && !errorDesc) return null;
 
-  // Clean the stale error parameters from the browser address bar immediately
-  // so refreshing or retrying login starts from a clean URL without breaking Supabase Auth.
   try {
     window.history.replaceState({}, document.title, window.location.pathname);
   } catch {
     // ignore history replace errors
   }
 
-  const decodedDesc = errorDesc
-    ? decodeURIComponent(errorDesc.replace(/\+/g, ' '))
-    : '';
-
-  if (errorCode === 'bad_oauth_state') {
-    return 'পূর্বের লগইন সেশনের মেয়াদ শেষ হয়েছিল বা অন্য ডোমেইন থেকে রিডাইরেক্ট হয়েছিল (bad_oauth_state)। URL পরিষ্কার করা হয়েছে — অনুগ্রহ করে এখন আবার "Google দিয়ে লগইন করুন" বাটনে চাপ দিন।';
-  }
-
-  return decodedDesc
-    ? `Google OAuth ত্রুটি (${errorCode || 'error'}): ${decodedDesc}`
-    : `Google OAuth ত্রুটি: ${errorCode}`;
+  return formatOAuthErrorMessage(errorCode, errorDesc);
 }
+
+let isOAuthRedirectInFlight = false;
 
 /**
  * Initiates Google OAuth login via Supabase Auth.
@@ -238,6 +310,13 @@ export async function signInWithGoogleSupabase(): Promise<{
   ok: boolean;
   messageBn: string;
 }> {
+  if (isOAuthRedirectInFlight) {
+    return {
+      ok: true,
+      messageBn: 'Google লগইন পাতায় রিডাইরেক্ট করা হচ্ছে...',
+    };
+  }
+
   if (!supabase) {
     supabase = createSupabaseInstance();
   }
@@ -268,62 +347,80 @@ export async function signInWithGoogleSupabase(): Promise<{
   const isInsideIframe =
     typeof window !== 'undefined' && window.self !== window.top;
 
-  if (!isInsideIframe) {
-    const { error } = await supabase.auth.signInWithOAuth({
+  isOAuthRedirectInFlight = true;
+
+  try {
+    if (!isInsideIframe) {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo,
+        },
+      });
+
+      if (error) {
+        isOAuthRedirectInFlight = false;
+        return {
+          ok: false,
+          messageBn: `Google লগইন ত্রুটি: ${error.message}। সুপাবেস ড্যাশবোর্ডে Authentication -> URL Configuration -> Redirect URLs-এ "${currentOrigin}" এবং "${currentOrigin}/**" যুক্ত আছে কিনা যাচাই করুন।`,
+        };
+      }
+
+      setTimeout(() => {
+        isOAuthRedirectInFlight = false;
+      }, 4000);
+
+      return {
+        ok: true,
+        messageBn: 'Google লগইন পাতায় রিডাইরেক্ট করা হচ্ছে...',
+      };
+    }
+
+    const { data, error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
         redirectTo,
+        skipBrowserRedirect: true,
       },
     });
 
     if (error) {
+      isOAuthRedirectInFlight = false;
       return {
         ok: false,
         messageBn: `Google লগইন ত্রুটি: ${error.message}। সুপাবেস ড্যাশবোর্ডে Authentication -> URL Configuration -> Redirect URLs-এ "${currentOrigin}" এবং "${currentOrigin}/**" যুক্ত আছে কিনা যাচাই করুন।`,
       };
     }
 
+    if (data?.url) {
+      const cleanUrl = data.url
+        .replace(/([?&])skip_http_redirect=true(&?)/, (_m, p1, p2) =>
+          p1 === '?' && p2 === '&' ? '?' : p2 ? p1 : ''
+        );
+      const popup = window.open(cleanUrl, '_blank', 'noopener,noreferrer');
+      if (!popup) {
+        window.location.assign(cleanUrl);
+      }
+      isOAuthRedirectInFlight = false;
+      return {
+        ok: true,
+        messageBn:
+          'Google লগইন পাতা নতুন ট্যাবে খোলা হয়েছে। লগইন সম্পন্ন করে এই ট্যাবে ফিরে আসুন।',
+      };
+    }
+
+    isOAuthRedirectInFlight = false;
     return {
       ok: true,
       messageBn: 'Google লগইন পাতায় রিডাইরেক্ট করা হচ্ছে...',
     };
-  }
-
-  const { data, error } = await supabase.auth.signInWithOAuth({
-    provider: 'google',
-    options: {
-      redirectTo,
-      skipBrowserRedirect: true,
-    },
-  });
-
-  if (error) {
+  } catch (err) {
+    isOAuthRedirectInFlight = false;
     return {
       ok: false,
-      messageBn: `Google লগইন ত্রুটি: ${error.message}। সুপাবেস ড্যাশবোর্ডে Authentication -> URL Configuration -> Redirect URLs-এ "${currentOrigin}" এবং "${currentOrigin}/**" যুক্ত আছে কিনা যাচাই করুন।`,
+      messageBn: `Google লগইন ত্রুটি: ${err instanceof Error ? err.message : 'অজানা ত্রুটি'}`,
     };
   }
-
-  if (data?.url) {
-    const cleanUrl = data.url
-      .replace(/([?&])skip_http_redirect=true(&?)/, (_m, p1, p2) =>
-        p1 === '?' && p2 === '&' ? '?' : p2 ? p1 : ''
-      );
-    const popup = window.open(cleanUrl, '_blank', 'noopener,noreferrer');
-    if (!popup) {
-      window.location.assign(cleanUrl);
-    }
-    return {
-      ok: true,
-      messageBn:
-        'Google লগইন পাতা নতুন ট্যাবে খোলা হয়েছে। লগইন সম্পন্ন করে এই ট্যাবে ফিরে আসুন।',
-    };
-  }
-
-  return {
-    ok: true,
-    messageBn: 'Google লগইন পাতায় রিডাইরেক্ট করা হচ্ছে...',
-  };
 }
 
 /**
