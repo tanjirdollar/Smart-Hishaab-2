@@ -3,6 +3,76 @@ import { ApplicationRepositoryState } from './financialDomainService';
 import { ProductionEntry } from '../types/models';
 import { formatTaka, toAsciiDigits } from '../utils/formatters';
 
+const LAST_BACKUP_TIMESTAMP_KEY = 'smart_hisab_last_backup_at_v1';
+
+export function recordLastBackupTimestamp(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(LAST_BACKUP_TIMESTAMP_KEY, new Date().toISOString());
+    window.dispatchEvent(new CustomEvent('smart-hisab-backup-recorded'));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function getLastBackupInfo(): {
+  iso: string | null;
+  daysAgo: number | null;
+  labelBn: string;
+  needsBackupReminder: boolean;
+} {
+  if (typeof window === 'undefined') {
+    return {
+      iso: null,
+      daysAgo: null,
+      labelBn: 'এখনও ব্যাকআপ নেওয়া হয়নি',
+      needsBackupReminder: true,
+    };
+  }
+  try {
+    const raw = localStorage.getItem(LAST_BACKUP_TIMESTAMP_KEY);
+    if (!raw) {
+      return {
+        iso: null,
+        daysAgo: null,
+        labelBn: 'এখনও কোনো অফলাইন ব্যাকআপ নেওয়া হয়নি',
+        needsBackupReminder: true,
+      };
+    }
+    const ts = new Date(raw).getTime();
+    if (Number.isNaN(ts)) {
+      return {
+        iso: null,
+        daysAgo: null,
+        labelBn: 'এখনও কোনো অফলাইন ব্যাকআপ নেওয়া হয়নি',
+        needsBackupReminder: true,
+      };
+    }
+    const diffDays = Math.floor((Date.now() - ts) / (1000 * 60 * 60 * 24));
+    const formattedDate = new Intl.DateTimeFormat('bn-BD', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(ts));
+
+    return {
+      iso: raw,
+      daysAgo: diffDays,
+      labelBn: `সর্বশেষ ব্যাকআপ: ${formattedDate}`,
+      needsBackupReminder: diffDays >= 7,
+    };
+  } catch {
+    return {
+      iso: null,
+      daysAgo: null,
+      labelBn: 'এখনও ব্যাকআপ নেওয়া হয়নি',
+      needsBackupReminder: true,
+    };
+  }
+}
+
 function getTodayIsoDate(): string {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -22,10 +92,19 @@ function triggerDownload(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/**
- * Exports full application state as a clean Smart Hisab JSON backup file.
- */
-export function exportStateToJsonBackup(repo: ApplicationRepositoryState): void {
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildJsonBackupBlob(repo: ApplicationRepositoryState): {
+  blob: Blob;
+  filename: string;
+} {
   const dateStr = getTodayIsoDate();
   const filename = `SmartHisab_Backup_${dateStr}.json`;
 
@@ -128,7 +207,58 @@ export function exportStateToJsonBackup(repo: ApplicationRepositoryState): void 
 
   const jsonStr = JSON.stringify(backupData, null, 2);
   const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+  return { blob, filename };
+}
+
+/**
+ * Exports full application state as a clean Smart Hisab JSON backup file.
+ */
+export function exportStateToJsonBackup(repo: ApplicationRepositoryState): void {
+  const { blob, filename } = buildJsonBackupBlob(repo);
   triggerDownload(blob, filename);
+  recordLastBackupTimestamp();
+}
+
+/**
+ * Shares the JSON backup directly via the mobile OS share sheet (Google Drive, WhatsApp, Telegram, Gmail).
+ * Falls back cleanly to normal file download if Web Share with files is unavailable.
+ */
+export async function shareJsonBackupFile(
+  repo: ApplicationRepositoryState
+): Promise<{ shared: boolean; messageBn: string }> {
+  const { blob, filename } = buildJsonBackupBlob(repo);
+  try {
+    const file = new File([blob], filename, { type: 'application/json' });
+    if (
+      typeof navigator !== 'undefined' &&
+      typeof navigator.share === 'function' &&
+      typeof navigator.canShare === 'function' &&
+      navigator.canShare({ files: [file] })
+    ) {
+      await navigator.share({
+        title: 'স্মার্ট হিসাব (Smart Hisab) পূর্ণাঙ্গ ব্যাকআপ',
+        text: `স্মার্ট হিসাব ব্যাকআপ ফাইল (${getTodayIsoDate()}) — নিরাপদে Google Drive বা নিজের WhatsApp/Gmail-এ সংরক্ষণ করুন।`,
+        files: [file],
+      });
+      recordLastBackupTimestamp();
+      return {
+        shared: true,
+        messageBn: 'ব্যাকআপ ফাইল শেয়ার সম্পন্ন হয়েছে!',
+      };
+    }
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      return { shared: false, messageBn: 'শেয়ার বাতিল করা হয়েছে।' };
+    }
+  }
+
+  triggerDownload(blob, filename);
+  recordLastBackupTimestamp();
+  return {
+    shared: false,
+    messageBn:
+      'ব্যাকআপ ফাইল ডাউনলোড হয়েছে! এখন ফোনের Downloads ফোল্ডার থেকে ফাইলটি Google Drive-এ আপলোড করে রাখুন।',
+  };
 }
 
 /**
@@ -220,6 +350,7 @@ export function exportStateToExcelWorkbook(repo: ApplicationRepositoryState): vo
   const wbOut = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
   const blob = new Blob([wbOut], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   triggerDownload(blob, filename);
+  recordLastBackupTimestamp();
 }
 
 /**
@@ -264,4 +395,113 @@ export function exportProductionEntriesToCsv(entries: ProductionEntry[]): void {
   const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
   triggerDownload(blob, filename);
+  recordLastBackupTimestamp();
+}
+
+/**
+ * Exports a self-contained offline-readable HTML report that opens in any browser
+ * without internet, Excel, or access to the web app.
+ */
+export function exportOfflineReadableHtmlReport(
+  repo: ApplicationRepositoryState
+): void {
+  const dateStr = getTodayIsoDate();
+  const filename = `SmartHisab_Offline_Report_${dateStr}.html`;
+
+  const totalEarned = repo.productionEntries.reduce(
+    (sum, e) => sum + Number(e.totalWage ?? 0),
+    0
+  );
+  const totalWithdrawn = repo.paymentWithdrawals.reduce(
+    (sum, w) => sum + Number(w.amount ?? 0),
+    0
+  );
+  const totalDue = Math.max(0, totalEarned - totalWithdrawn);
+  const totalPieces = repo.productionEntries.reduce(
+    (sum, e) => sum + Number(e.pieces ?? 0),
+    0
+  );
+
+  const prodRowsHtml = repo.productionEntries
+    .map(
+      (e, idx) => `<tr>
+        <td>${idx + 1}</td>
+        <td>${escapeHtml(e.date)}</td>
+        <td><strong>${escapeHtml(e.itemName || e.garmentType)}</strong><br/><small>${escapeHtml(e.category)} ${e.size ? '· সাইজ: ' + escapeHtml(e.size) : ''}</small></td>
+        <td>${escapeHtml(e.pieces ?? 0)} পিস (${escapeHtml(Number(e.dozens ?? 0).toFixed(2))} ডজন)</td>
+        <td>${escapeHtml(formatTaka(e.ratePerDozen ?? 0))}</td>
+        <td><strong>${escapeHtml(formatTaka(e.totalWage ?? 0))}</strong></td>
+        <td>${e.settlementStatus === 'settled' ? 'নিষ্পত্তি হয়েছে' : 'বাকি / নিষ্পত্তি হয়নি'}</td>
+      </tr>`
+    )
+    .join('');
+
+  const wdRowsHtml = repo.paymentWithdrawals
+    .map(
+      (w, idx) => `<tr>
+        <td>${idx + 1}</td>
+        <td>${escapeHtml(w.date)}</td>
+        <td><strong>${escapeHtml(formatTaka(w.amount ?? 0))}</strong></td>
+        <td>${escapeHtml(w.paymentMethod)}</td>
+        <td>${escapeHtml(w.remarks || w.weekReference)}</td>
+      </tr>`
+    )
+    .join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>স্মার্ট হিসাব — অফলাইন পূর্ণাঙ্গ রিপোর্ট (${escapeHtml(dateStr)})</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 20px; background: #f8fafc; color: #0f172a; }
+    .container { max-width: 980px; margin: 0 auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 24px; }
+    h1 { margin: 0 0 4px; color: #0f766e; font-size: 22px; }
+    .sub { color: #64748b; font-size: 13px; margin-bottom: 18px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .card { background: #f1f5f9; border-radius: 12px; padding: 12px 14px; }
+    .card span { display: block; font-size: 12px; color: #475569; }
+    .card strong { font-size: 18px; color: #0f172a; }
+    h2 { font-size: 16px; margin: 24px 0 10px; border-bottom: 2px solid #0f766e; padding-bottom: 4px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border: 1px solid #e2e8f0; padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: #f0fdfa; color: #115e59; }
+    small { color: #64748b; }
+    @media print { body { background: #fff; padding: 0; } .container { border: none; padding: 0; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>স্মার্ট হিসাব (Smart Hisab) — অফলাইন ব্যাকআপ রিপোর্ট</h1>
+    <div class="sub">রিপোর্ট তৈরির তারিখ: ${escapeHtml(dateStr)} · ইন্টারনেট বা অ্যাপ ছাড়াই যেকোনো ব্রাউজারে পড়ার ও প্রিন্ট করার উপযোগী</div>
+    <div class="cards">
+      <div class="card"><span>মোট প্রোডাকশন</span><strong>${escapeHtml(repo.productionEntries.length)} টি (${escapeHtml(totalPieces)} পিস)</strong></div>
+      <div class="card"><span>মোট অর্জিত মজুরি</span><strong>${escapeHtml(formatTaka(totalEarned))}</strong></div>
+      <div class="card"><span>মোট বিল উত্তোলন</span><strong>${escapeHtml(formatTaka(totalWithdrawn))}</strong></div>
+      <div class="card"><span>কোম্পানির কাছে পাওনা</span><strong>${escapeHtml(formatTaka(totalDue))}</strong></div>
+    </div>
+
+    <h2>১. প্রোডাকশন খতিয়ান (${escapeHtml(repo.productionEntries.length)} টি)</h2>
+    <table>
+      <thead>
+        <tr><th>#</th><th>তারিখ</th><th>আইটেম</th><th>পরিমাণ</th><th>দর/ডজন</th><th>মোট মজুরি</th><th>অবস্থা</th></tr>
+      </thead>
+      <tbody>${prodRowsHtml || '<tr><td colspan="7">কোনো এন্ট্রি নেই</td></tr>'}</tbody>
+    </table>
+
+    <h2>২. কোম্পানি বিল উত্তোলন (${escapeHtml(repo.paymentWithdrawals.length)} টি)</h2>
+    <table>
+      <thead>
+        <tr><th>#</th><th>তারিখ</th><th>টাকা</th><th>মাধ্যম</th><th>মন্তব্য</th></tr>
+      </thead>
+      <tbody>${wdRowsHtml || '<tr><td colspan="5">কোনো উত্তোলন নেই</td></tr>'}</tbody>
+    </table>
+  </div>
+</body>
+</html>`;
+
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  triggerDownload(blob, filename);
+  recordLastBackupTimestamp();
 }

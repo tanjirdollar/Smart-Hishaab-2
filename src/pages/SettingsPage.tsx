@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  Clock,
   Download,
   FileSpreadsheet,
   LogIn,
@@ -13,6 +14,7 @@ import { ModuleId, ThemeMode } from '../types/models';
 import { FormInput, FormSelect } from '../components/ui/FormFields';
 import { PageHeader } from '../components/ui/PageHeader';
 import { PWAInstallButton } from '../components/ui/PWAInstallButton';
+import { getLastBackupInfo } from '../services/dataExportService';
 
 export interface SettingsPageProps {
   theme: ThemeMode;
@@ -34,6 +36,13 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [machineType, setMachineType] = useState('সিঙ্গেল নিডেল লকস্টিচ (Single Needle)');
   const [lineNo, setLineNo] = useState('');
   const [savedNoticeBn, setSavedNoticeBn] = useState<string | null>(null);
+  const [lastBackupInfo, setLastBackupInfo] = useState(() => getLastBackupInfo());
+
+  useEffect(() => {
+    const refresh = () => setLastBackupInfo(getLastBackupInfo());
+    window.addEventListener('smart-hisab-backup-recorded', refresh);
+    return () => window.removeEventListener('smart-hisab-backup-recorded', refresh);
+  }, []);
 
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,13 +76,25 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
       {/* Data Backup / Export, Import & Mobile App Install Section */}
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
-        <div>
-          <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-            ডেটা ব্যাকআপ, ইমপোর্ট ও মোবাইল অ্যাপ ইনস্টল
-          </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            আপনার সমস্ত হিসাব নিরাপদে ডাউনলোড/ব্যাকআপ করুন, পুরাতন ফাইল ইমপোর্ট করুন অথবা ফোনে অ্যাপ হিসেবে ইনস্টল করুন
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+              ডেটা ব্যাকআপ, ইমপোর্ট ও মোবাইল অ্যাপ ইনস্টল
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              আপনার সমস্ত হিসাব নিরাপদে Google Drive / ফোনে ব্যাকআপ রাখুন অথবা অফলাইন রিপোর্ট ডাউনলোড করুন
+            </p>
+          </div>
+          <div
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-medium shrink-0 ${
+              lastBackupInfo.needsBackupReminder
+                ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200'
+                : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5 shrink-0" />
+            <span>{lastBackupInfo.labelBn}</span>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
@@ -89,7 +110,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     ডেটা ব্যাকআপ ও এক্সপোর্ট (Export)
                   </h3>
                   <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
-                    সকল প্রোডাকশন, মজুরি, ফান্ড ও আয়-ব্যয়ের হিসাব JSON ব্যাকআপ, Excel (.xlsx) বা CSV ফাইলে ডাউনলোড করুন।
+                    সকল প্রোডাকশন, মজুরি, ফান্ড ও আয়-ব্যয়ের হিসাব সরাসরি Google Drive-এ শেয়ার, JSON ব্যাকআপ, Excel (.xlsx) বা অফলাইন HTML রিপোর্ট ডাউনলোড করুন।
                   </p>
                 </div>
               </div>
@@ -99,7 +120,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 className="w-full min-h-[42px] px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
               >
                 <Download className="w-4 h-4" />
-                <span>ব্যাকআপ / এক্সপোর্ট ফাইল ডাউনলোড করুন</span>
+                <span>ব্যাকআপ / এক্সপোর্ট ও শেয়ার অপশন খুলুন</span>
               </button>
             </div>
           )}
