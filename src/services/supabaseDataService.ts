@@ -537,7 +537,8 @@ export function deduplicateAndCleanProductionEntries(
   };
 }
 
-export const SUPABASE_SETUP_SQL_SCRIPT = `CREATE TABLE IF NOT EXISTS public.production_entries (
+export const SUPABASE_SETUP_SQL_SCRIPT = `-- ১. প্রোডাকশন এন্ট্রি টেবিল (আগের কোনো ডেটা মুছবে না)
+CREATE TABLE IF NOT EXISTS public.production_entries (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL DEFAULT auth.uid(),
   entry_date date NOT NULL DEFAULT CURRENT_DATE,
@@ -581,6 +582,46 @@ CREATE POLICY "prod_update_own" ON public.production_entries FOR UPDATE TO authe
 
 DROP POLICY IF EXISTS "prod_delete_own" ON public.production_entries;
 CREATE POLICY "prod_delete_own" ON public.production_entries FOR DELETE TO authenticated USING (auth.uid() = user_id);
+
+-- ২. অন্যান্য হিসাব (মজুরি, উত্তোলন, ঋণ, ফান্ড, আয়-ব্যয়) রাখার আলাদা টেবিল (যাতে JWT টোকেন বড় না হয়)
+CREATE TABLE IF NOT EXISTS public.user_app_state (
+  user_id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  state_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+GRANT ALL ON TABLE public.user_app_state TO anon, authenticated, service_role;
+ALTER TABLE public.user_app_state ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "user_app_state_own" ON public.user_app_state;
+CREATE POLICY "user_app_state_own" ON public.user_app_state FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+-- ৩. পুরনো user_metadata-র ডেটা নিরাপদে public.user_app_state-এ কপি করে লগইন টোকেন (JWT) হালকা করা
+INSERT INTO public.user_app_state (user_id, state_json, updated_at)
+SELECT
+  id,
+  jsonb_build_object(
+    'auxiliary', COALESCE(raw_user_meta_data->'smart_hisab_auxiliary_modules_v1', '{}'::jsonb),
+    'tombstones', COALESCE(raw_user_meta_data->'smart_hisab_deleted_tombstones_v2', '{"ids":[],"signatures":[]}'::jsonb),
+    'legacy_entries_backup', COALESCE(raw_user_meta_data->'smart_hisab_production_entries_v1', '[]'::jsonb)
+  ),
+  now()
+FROM auth.users
+WHERE raw_user_meta_data ? 'smart_hisab_production_entries_v1'
+   OR raw_user_meta_data ? 'smart_hisab_auxiliary_modules_v1'
+   OR raw_user_meta_data ? 'smart_hisab_deleted_tombstones_v2'
+ON CONFLICT (user_id) DO UPDATE
+  SET state_json = EXCLUDED.state_json,
+      updated_at = now();
+
+UPDATE auth.users
+SET raw_user_meta_data = raw_user_meta_data
+  - 'smart_hisab_production_entries_v1'
+  - 'smart_hisab_auxiliary_modules_v1'
+  - 'smart_hisab_deleted_tombstones_v2'
+WHERE raw_user_meta_data ? 'smart_hisab_production_entries_v1'
+   OR raw_user_meta_data ? 'smart_hisab_auxiliary_modules_v1'
+   OR raw_user_meta_data ? 'smart_hisab_deleted_tombstones_v2';
 
 NOTIFY pgrst, 'reload schema';`;
 
@@ -933,30 +974,75 @@ export interface AuxiliaryModulesCloudPayload {
   incomeExpenseRecords?: IncomeExpenseRecord[];
 }
 
+function mergeCloudTombstones(cloudTombstones?: Partial<DeletedTombstones> | null): void {
+  if (!cloudTombstones) return;
+  const localTombstones = getLocalDeletedTombstones();
+  saveLocalDeletedTombstones({
+    ids: [
+      ...localTombstones.ids,
+      ...(Array.isArray(cloudTombstones.ids) ? cloudTombstones.ids : []),
+    ],
+    signatures: [
+      ...localTombstones.signatures,
+      ...(Array.isArray(cloudTombstones.signatures)
+        ? cloudTombstones.signatures
+        : []),
+    ],
+  });
+}
+
+interface UserAppStateJson {
+  auxiliary?: AuxiliaryModulesCloudPayload;
+  tombstones?: Partial<DeletedTombstones>;
+  legacy_entries_backup?: ProductionEntry[];
+}
+
+async function readUserAppStateRow(userId: string): Promise<UserAppStateJson | null> {
+  if (!supabase || !userId) return null;
+  try {
+    const { data, error } = await supabase
+      .from(SUPABASE_TABLES.USER_APP_STATE)
+      .select('state_json')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error || !data || typeof data.state_json !== 'object') {
+      return null;
+    }
+    return data.state_json as UserAppStateJson;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Reads auxiliary modules (Withdrawals, Wages, Loans, Funds, Income/Expense) stored in Supabase Auth `user_metadata`.
+ * Reads auxiliary modules (Withdrawals, Wages, Loans, Funds, Income/Expense) from `public.user_app_state`,
+ * falling back safely to local session `user_metadata` without making extra Auth network calls.
  */
 export async function readAuxiliaryModulesFromSupabaseMetadata(): Promise<AuxiliaryModulesCloudPayload | null> {
   if (!supabase) return null;
-  const { data } = await supabase.auth.getUser();
-  const metadata = data.user?.user_metadata;
+  const { data: sessionData } = await supabase.auth.getSession();
+  const user = sessionData.session?.user;
+  if (!user) return null;
+
+  // 1. Prefer dedicated `public.user_app_state` table (never bloats JWT)
+  const appState = await readUserAppStateRow(user.id);
+  if (appState?.tombstones) {
+    mergeCloudTombstones(appState.tombstones);
+  }
+  if (
+    appState?.auxiliary &&
+    typeof appState.auxiliary === 'object' &&
+    Object.keys(appState.auxiliary).length > 0
+  ) {
+    return appState.auxiliary;
+  }
+
+  // 2. Fallback to local session `user_metadata` (already in memory, safe even if JWT was bloated)
+  const metadata = user.user_metadata;
   if (metadata?.[AUTH_METADATA_TOMBSTONES_KEY]) {
-    const cloudTombstones = metadata[
-      AUTH_METADATA_TOMBSTONES_KEY
-    ] as Partial<DeletedTombstones>;
-    const localTombstones = getLocalDeletedTombstones();
-    saveLocalDeletedTombstones({
-      ids: [
-        ...localTombstones.ids,
-        ...(Array.isArray(cloudTombstones.ids) ? cloudTombstones.ids : []),
-      ],
-      signatures: [
-        ...localTombstones.signatures,
-        ...(Array.isArray(cloudTombstones.signatures)
-          ? cloudTombstones.signatures
-          : []),
-      ],
-    });
+    mergeCloudTombstones(
+      metadata[AUTH_METADATA_TOMBSTONES_KEY] as Partial<DeletedTombstones>
+    );
   }
   const raw = metadata?.[AUTH_METADATA_AUXILIARY_KEY];
   if (!raw || typeof raw !== 'object') return null;
@@ -964,53 +1050,71 @@ export async function readAuxiliaryModulesFromSupabaseMetadata(): Promise<Auxili
 }
 
 /**
- * Persists auxiliary modules (Withdrawals, Wages, Loans, Funds, Income/Expense) into Supabase Auth `user_metadata`.
+ * Persists auxiliary modules (Withdrawals, Wages, Loans, Funds, Income/Expense) into `public.user_app_state`.
+ * NEVER writes large arrays into `auth.users.user_metadata` (which bloats the JWT access token).
  */
 export async function saveAuxiliaryModulesToSupabaseMetadata(
   payload: AuxiliaryModulesCloudPayload
 ): Promise<boolean> {
   if (!supabase) return false;
   const { data: sessionData } = await supabase.auth.getSession();
-  if (!sessionData.session?.user) return false;
+  const userId = sessionData.session?.user?.id;
+  if (!userId) return false;
 
-  const { error } = await supabase.auth.updateUser({
-    data: {
-      [AUTH_METADATA_AUXILIARY_KEY]: payload,
-      [AUTH_METADATA_TOMBSTONES_KEY]: getLocalDeletedTombstones(),
-    },
-  });
-  return !error;
+  try {
+    const { error } = await supabase
+      .from(SUPABASE_TABLES.USER_APP_STATE)
+      .upsert(
+        {
+          user_id: userId,
+          state_json: {
+            auxiliary: payload,
+            tombstones: getLocalDeletedTombstones(),
+          },
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' }
+      );
+    return !error;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Reads production entries stored in Supabase Auth `user_metadata`.
+ * Reads any legacy production entries from `public.user_app_state` (`legacy_entries_backup`)
+ * or local session `user_metadata` (without calling `getUser()` over the network).
  */
 export async function readEntriesFromSupabaseUserMetadata(): Promise<ProductionEntry[]> {
   if (!supabase) return [];
-  const { data } = await supabase.auth.getUser();
-  const metadata = data.user?.user_metadata;
+  const { data: sessionData } = await supabase.auth.getSession();
+  const user = sessionData.session?.user;
+  if (!user) return [];
+
+  const collected: ProductionEntry[] = [];
+
+  const appState = await readUserAppStateRow(user.id);
+  if (appState?.tombstones) {
+    mergeCloudTombstones(appState.tombstones);
+  }
+  if (Array.isArray(appState?.legacy_entries_backup)) {
+    collected.push(...appState.legacy_entries_backup);
+  }
+
+  const metadata = user.user_metadata;
   if (metadata?.[AUTH_METADATA_TOMBSTONES_KEY]) {
-    const cloudTombstones = metadata[
-      AUTH_METADATA_TOMBSTONES_KEY
-    ] as Partial<DeletedTombstones>;
-    const localTombstones = getLocalDeletedTombstones();
-    saveLocalDeletedTombstones({
-      ids: [
-        ...localTombstones.ids,
-        ...(Array.isArray(cloudTombstones.ids) ? cloudTombstones.ids : []),
-      ],
-      signatures: [
-        ...localTombstones.signatures,
-        ...(Array.isArray(cloudTombstones.signatures)
-          ? cloudTombstones.signatures
-          : []),
-      ],
-    });
+    mergeCloudTombstones(
+      metadata[AUTH_METADATA_TOMBSTONES_KEY] as Partial<DeletedTombstones>
+    );
   }
   const rawList = metadata?.[AUTH_METADATA_ENTRIES_KEY];
-  if (!Array.isArray(rawList)) return [];
+  if (Array.isArray(rawList)) {
+    collected.push(...(rawList as ProductionEntry[]));
+  }
+
+  if (collected.length === 0) return [];
   const tombstones = getLocalDeletedTombstones();
-  return (rawList as ProductionEntry[])
+  return collected
     .filter((e) => e && !isEntryDeletedByTombstone(e, tombstones))
     .map((e) => ({
       ...e,
@@ -1020,46 +1124,20 @@ export async function readEntriesFromSupabaseUserMetadata(): Promise<ProductionE
 }
 
 /**
- * Writes production entries into Supabase Auth `user_metadata` as a durable cloud mirror.
+ * Legacy no-op: Production entries are persisted directly in `public.production_entries`.
+ * Writing arrays into `auth.users.user_metadata` bloats the JWT access token above Cloudflare's
+ * HTTP header limit and causes `TypeError: Failed to fetch`, so we intentionally never write there.
  */
 export async function writeEntriesToSupabaseUserMetadata(
-  entries: ProductionEntry[],
-  referenceBackupEntries: ProductionEntry[] = []
+  _entries: ProductionEntry[],
+  _referenceBackupEntries: ProductionEntry[] = []
 ): Promise<boolean> {
-  if (!supabase) return false;
-  const tombstones = getLocalDeletedTombstones();
-  const { cleanedEntries } = deduplicateAndCleanProductionEntries(
-    entries,
-    referenceBackupEntries
-  );
-  // Strip blob and large base64 data URLs before saving in user_metadata to stay well within JWT metadata limits
-  const sanitized = cleanedEntries
-    .filter((e) => !isEntryDeletedByTombstone(e, tombstones))
-    .slice(0, 150)
-    .map((e) => ({
-      ...e,
-      id: toDeterministicUuid(e.id),
-      photos: (e.photos || []).filter(
-        (p) =>
-          (p.storagePath && !p.storagePath.startsWith('data:')) ||
-          (p.previewUrl &&
-            !p.previewUrl.startsWith('blob:') &&
-            !p.previewUrl.startsWith('data:'))
-      ),
-    }));
-  const { error } = await supabase.auth.updateUser({
-    data: {
-      [AUTH_METADATA_ENTRIES_KEY]: sanitized,
-      [AUTH_METADATA_TOMBSTONES_KEY]: tombstones,
-    },
-  });
-  return !error;
+  return true;
 }
 
 /**
  * Fetches all production entries for the authenticated user in chronological order (newest first),
- * ALWAYS merging rows from `public.production_entries` AND `user_metadata` (`smart_hisab_production_entries_v1`)
- * so no manual entry or edited entry ever gets stranded in either storage layer.
+ * merging rows from `public.production_entries` and any migrated legacy backup entries.
  */
 export async function fetchProductionEntriesFromSupabase(
   explicitUserId?: string,
@@ -1073,18 +1151,16 @@ export async function fetchProductionEntriesFromSupabase(
     return { entries: [], errorBn: null };
   }
 
-  let userId = explicitUserId;
-  if (!userId) {
-    const { data: sessionData } = await supabase.auth.getSession();
-    userId = sessionData.session?.user?.id;
-  }
+  const { data: sessionData } = await supabase.auth.getSession();
+  const session = sessionData.session;
+  const userId = explicitUserId || session?.user?.id;
+  const accessTokenLength = session?.access_token?.length ?? 0;
 
   if (!userId) {
     return { entries: [], errorBn: null };
   }
 
-  // Always read user_metadata entries in parallel with SQL table query so any manual or edited
-  // entries stored in user_metadata are ALWAYS recovered and merged!
+  // Always read local/migrated legacy metadata entries in parallel with SQL table query
   const [tableRes, metadataEntries] = await Promise.all([
     supabase
       .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
@@ -1110,6 +1186,21 @@ export async function fetchProductionEntriesFromSupabase(
       };
     }
 
+    const isNetworkOrHeaderBloatError =
+      /Failed to fetch|NetworkError|Load failed/i.test(error.message);
+
+    if (isNetworkOrHeaderBloatError && accessTokenLength > 12000) {
+      const { cleanedEntries } = deduplicateAndCleanProductionEntries(
+        metadataEntries,
+        referenceBackupEntries
+      );
+      return {
+        entries: cleanedEntries,
+        missingTableSetup: false,
+        errorBn: `লগইন টোকেন (JWT) পুরনো মেটাডেটার কারণে অতিরিক্ত বড় (${Math.round(accessTokenLength / 1024)} KB) হয়ে গেছে, তাই সুপাবেস সার্ভার রিকোয়েস্ট ব্লক করছে। আপনার সব ডেটা নিরাপদ আছে — "টেবিল সেটআপ SQL দেখুন" থেকে SQL কোডটি Supabase SQL Editor-এ একবার Run করে লগআউট ও পুনরায় লগইন করলেই সমাধান হয়ে যাবে।`,
+      };
+    }
+
     if (metadataEntries.length > 0) {
       const { cleanedEntries } = deduplicateAndCleanProductionEntries(
         metadataEntries,
@@ -1132,7 +1223,7 @@ export async function fetchProductionEntriesFromSupabase(
     mapSupabaseRowToProductionEntry
   );
 
-  // Combine both SQL table rows and Auth user_metadata entries, then deduplicate (preferring edited & manual entries)
+  // Combine both SQL table rows and migrated legacy entries, then deduplicate
   const combinedCloud = [...mappedFromSql, ...metadataEntries];
   const { cleanedEntries, obsoleteCloudIdsToDelete } =
     deduplicateAndCleanProductionEntries(combinedCloud, referenceBackupEntries);
@@ -1149,7 +1240,7 @@ export async function fetchProductionEntriesFromSupabase(
     }
   }
 
-  // If metadataEntries had manual or edited entries that were missing or outdated in SQL table, batch-sync them into SQL table
+  // Sync any recovered legacy entries into SQL table
   const sqlById = new Map<string, ProductionEntry>();
   for (const rowEntry of mappedFromSql) {
     sqlById.set(rowEntry.id, rowEntry);
@@ -1177,11 +1268,39 @@ export async function fetchProductionEntriesFromSupabase(
 
   if (entriesToSyncToSql.length > 0) {
     const payloads = entriesToSyncToSql.map((e) =>
-      mapProductionEntryToSupabasePayload(e, userId!)
+      mapProductionEntryToSupabasePayload(e, userId)
     );
     void supabase
       .from(SUPABASE_TABLES.PRODUCTION_LEDGER)
       .upsert(payloads, { onConflict: 'id' });
+  }
+
+  // Proactively slim down legacy user_metadata if the request succeeded and legacy keys still exist
+  const meta = session?.user?.user_metadata;
+  if (
+    meta &&
+    (meta[AUTH_METADATA_ENTRIES_KEY] ||
+      meta[AUTH_METADATA_AUXILIARY_KEY] ||
+      meta[AUTH_METADATA_TOMBSTONES_KEY])
+  ) {
+    void (async () => {
+      try {
+        if (meta[AUTH_METADATA_AUXILIARY_KEY]) {
+          await saveAuxiliaryModulesToSupabaseMetadata(
+            meta[AUTH_METADATA_AUXILIARY_KEY] as AuxiliaryModulesCloudPayload
+          );
+        }
+        await supabase?.auth.updateUser({
+          data: {
+            [AUTH_METADATA_ENTRIES_KEY]: null,
+            [AUTH_METADATA_AUXILIARY_KEY]: null,
+            [AUTH_METADATA_TOMBSTONES_KEY]: null,
+          },
+        });
+      } catch {
+        // ignore background cleanup error
+      }
+    })();
   }
 
   return { entries: cleanedEntries, missingTableSetup: false, errorBn: null };

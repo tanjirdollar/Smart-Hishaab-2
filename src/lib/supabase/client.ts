@@ -237,6 +237,7 @@ export function clearRuntimeSupabaseConfig(): void {
 export const SUPABASE_TABLES = {
   OPERATOR_PROFILES: 'operator_profiles',
   PRODUCTION_LEDGER: 'production_entries',
+  USER_APP_STATE: 'user_app_state',
   WAGE_LEDGER: 'wage_periods',
   PAYMENT_WITHDRAWALS: 'payment_withdrawals',
   LOAN_RECORDS: 'loan_records',
