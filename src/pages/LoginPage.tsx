@@ -8,6 +8,8 @@ import {
   HelpCircle,
   KeyRound,
   LogOut,
+  Mail,
+  RefreshCw,
   Scissors,
   ShieldCheck,
   UserCheck,
@@ -19,8 +21,11 @@ import {
   getOAuthErrorFromUrl,
   getRuntimeSupabaseConfig,
   getSupabaseConnectionState,
+  sendEmailOtpSupabase,
   signInWithGoogleSupabase,
   signOutSupabase,
+  testSupabaseConnection,
+  verifyEmailOtpSupabase,
 } from '../lib/supabase/client';
 
 export interface LoginPageProps {
@@ -41,12 +46,20 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const [authNoticeBn, setAuthNoticeBn] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(false);
+  const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [showDomainHelp, setShowDomainHelp] = useState(false);
+  const [showEmailOtpForm, setShowEmailOtpForm] = useState(false);
+  const [emailInput, setEmailInput] = useState('');
+  const [otpCodeInput, setOtpCodeInput] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
   const [showConfigForm, setShowConfigForm] = useState(
     () => !getSupabaseConnectionState().isConfigured
   );
   const [runtimeUrlInput, setRuntimeUrlInput] = useState(
-    () => getRuntimeSupabaseConfig()?.url || getSupabaseConnectionState().projectUrl || ''
+    () =>
+      getRuntimeSupabaseConfig()?.url ||
+      getSupabaseConnectionState().projectUrl ||
+      ''
   );
   const [runtimeKeyInput, setRuntimeKeyInput] = useState(
     () => getRuntimeSupabaseConfig()?.anonKey || ''
@@ -62,6 +75,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       setIsError(true);
       setAuthNoticeBn(urlOAuthErr);
       setShowDomainHelp(true);
+      setShowEmailOtpForm(true);
     }
 
     const handleReconfigured = () => {
@@ -109,6 +123,17 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     setAuthNoticeBn('কাস্টম সুপাবেস সংযোগ মুছে ফেলা হয়েছে।');
   };
 
+  const handleTestConnection = async () => {
+    setIsTestingConnection(true);
+    try {
+      const res = await testSupabaseConnection();
+      setIsError(!res.ok);
+      setAuthNoticeBn(res.messageBn);
+    } finally {
+      setIsTestingConnection(false);
+    }
+  };
+
   const handleGoogleLoginClick = async () => {
     if (!supabaseState.isConfigured) {
       setShowConfigForm(true);
@@ -127,6 +152,46 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       setAuthNoticeBn(response.messageBn);
       if (!response.ok) {
         setShowDomainHelp(true);
+      }
+    } finally {
+      setIsCheckingAuth(false);
+    }
+  };
+
+  const handleSendEmailOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!supabaseState.isConfigured) {
+      setShowConfigForm(true);
+      setIsError(true);
+      setAuthNoticeBn(
+        'প্রথমে আপনার Supabase Project URL এবং Publishable/Anon Key সংরক্ষণ করুন।'
+      );
+      return;
+    }
+    setIsCheckingAuth(true);
+    setAuthNoticeBn(null);
+    try {
+      const res = await sendEmailOtpSupabase(emailInput);
+      setIsError(!res.ok);
+      setAuthNoticeBn(res.messageBn);
+      if (res.ok) {
+        setOtpSent(true);
+      }
+    } finally {
+      setIsCheckingAuth(false);
+    }
+  };
+
+  const handleVerifyEmailOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsCheckingAuth(true);
+    setAuthNoticeBn(null);
+    try {
+      const res = await verifyEmailOtpSupabase(emailInput, otpCodeInput);
+      setIsError(!res.ok);
+      setAuthNoticeBn(res.messageBn);
+      if (res.ok) {
+        setOtpCodeInput('');
       }
     } finally {
       setIsCheckingAuth(false);
@@ -343,6 +408,88 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       : 'Google দিয়ে লগইন করুন'}
                   </span>
                 </button>
+
+                {/* Email / Gmail OTP Fallback Login (zero OAuth redirect issues, same Supabase user account) */}
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowEmailOtpForm((prev) => !prev)}
+                    className="w-full min-h-[42px] px-4 py-2 rounded-2xl border border-teal-200 dark:border-teal-800/80 bg-teal-50/50 dark:bg-teal-950/30 hover:bg-teal-50 dark:hover:bg-teal-950/50 text-teal-800 dark:text-teal-200 text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                  >
+                    <Mail className="w-4 h-4 shrink-0" />
+                    <span>
+                      {showEmailOtpForm
+                        ? 'ইমেইল / Gmail কোড লগইন বন্ধ করুন'
+                        : 'বিকল্প: Gmail কোড (OTP) বা লিংক দিয়ে লগইন করুন'}
+                    </span>
+                  </button>
+
+                  {showEmailOtpForm && (
+                    <div className="mt-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/60 p-4 space-y-3">
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                        আপনার <strong>একই Gmail ঠিকানা</strong> দিয়ে লগইন করলে সুপাবেসের পূর্বের সমস্ত ডেটা ১০০% অক্ষত অবস্থায় লোড হবে এবং কোনো OAuth State ত্রুটি হবে না।
+                      </p>
+
+                      <form onSubmit={handleSendEmailOtp} className="space-y-2.5">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                            আপনার Gmail / ইমেইল ঠিকানা
+                          </label>
+                          <input
+                            type="email"
+                            required
+                            value={emailInput}
+                            onChange={(e) => setEmailInput(e.target.value)}
+                            placeholder="example@gmail.com"
+                            className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-white"
+                          />
+                        </div>
+                        <button
+                          type="submit"
+                          disabled={isCheckingAuth}
+                          className="w-full min-h-[40px] px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Mail className="w-3.5 h-3.5" />
+                          <span>
+                            {otpSent
+                              ? 'পুনরায় লগইন কোড / লিংক পাঠান'
+                              : 'Gmail-এ লগইন কোড / লিংক পাঠান'}
+                          </span>
+                        </button>
+                      </form>
+
+                      {otpSent && (
+                        <form
+                          onSubmit={handleVerifyEmailOtp}
+                          className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2.5"
+                        >
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                              ইমেইলে প্রাপ্ত ৬ সংখ্যার কোড (অথবা ইমেইলের লিংকে ক্লিক করুন)
+                            </label>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              required
+                              value={otpCodeInput}
+                              onChange={(e) => setOtpCodeInput(e.target.value)}
+                              placeholder="যেমন: 123456"
+                              className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono tracking-widest text-slate-900 dark:text-white"
+                            />
+                          </div>
+                          <button
+                            type="submit"
+                            disabled={isCheckingAuth}
+                            className="w-full min-h-[40px] px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>কোড যাচাই করে লগইন করুন</span>
+                          </button>
+                        </form>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </>
           )}
@@ -398,7 +545,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       <strong>URL Configuration</strong>-এ যান।
                     </li>
                     <li>
-                      <strong>Redirect URLs</strong> তালিকায় নিচের URL গুলো যুক্ত করে{' '}
+                      <strong>Site URL</strong> বক্সে নিচের প্রথম URL-টি বসান এবং{' '}
+                      <strong>Redirect URLs</strong> তালিকায় সবগুলো URL যুক্ত করে{' '}
                       <strong>Save</strong> করুন:
                     </li>
                   </ol>
@@ -408,7 +556,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       {[
                         currentOrigin,
                         `${currentOrigin}/**`,
-                        'https://*-tanjir4.vercel.app/**',
                       ].map((urlItem) => (
                         <div
                           key={urlItem}
@@ -431,9 +578,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   )}
 
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed pt-1">
-                    নোট: Vercel-এর <strong>Environment Variables</strong>-এ{' '}
+                    নোট: Vercel-এর <strong>Environment Variables</strong>-এ শুধু দুটি ভ্যারিয়েবল রাখুন:{' '}
                     <code className="font-mono">VITE_SUPABASE_URL</code> এবং{' '}
-                    <code className="font-mono">VITE_SUPABASE_ANON_KEY</code> সেট করা না থাকলেও উপরের <strong>Project URL ও Key পরিবর্তন</strong> অপশন থেকে সরাসরি সংযোগ সক্রিয় করতে পারবেন।
+                    <code className="font-mono">VITE_SUPABASE_PUBLISHABLE_KEY</code> (অথবা <code className="font-mono">VITE_SUPABASE_ANON_KEY</code>)।
                   </p>
                 </div>
               )}
@@ -444,11 +591,26 @@ export const LoginPage: React.FC<LoginPageProps> = ({
           <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-2 text-xs text-slate-500 dark:text-slate-400">
             <div className="flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-teal-700 dark:text-teal-400 shrink-0" />
-              <span>নিরাপদ Supabase Google OAuth 2.0 অথেনটিকেশন</span>
+              <span>নিরাপদ Supabase PKCE OAuth 2.0 ও Email OTP অথেনটিকেশন</span>
             </div>
-            <div className="flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-teal-700 dark:text-teal-400 shrink-0" />
-              <span>{supabaseState.statusMessageBn}</span>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <CheckCircle2 className="w-4 h-4 text-teal-700 dark:text-teal-400 shrink-0" />
+                <span className="truncate">{supabaseState.statusMessageBn}</span>
+              </div>
+              {supabaseState.isConfigured && (
+                <button
+                  type="button"
+                  onClick={handleTestConnection}
+                  disabled={isTestingConnection}
+                  className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-[11px] font-semibold text-teal-700 dark:text-teal-300 inline-flex items-center gap-1 shrink-0 cursor-pointer"
+                >
+                  <RefreshCw
+                    className={`w-3 h-3 ${isTestingConnection ? 'animate-spin' : ''}`}
+                  />
+                  <span>যাচাই</span>
+                </button>
+              )}
             </div>
           </div>
         </div>

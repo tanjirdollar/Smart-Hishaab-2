@@ -167,6 +167,7 @@ function createSupabaseInstance(): SupabaseClient | null {
   try {
     return createClient(url, anonKey, {
       auth: {
+        flowType: 'pkce',
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: true,
@@ -212,7 +213,7 @@ export function configureRuntimeSupabase(
     return {
       ok: true,
       messageBn:
-        'সুপাবেস সংযোগ সফলভাবে সক্রিয় হয়েছে! এখন Google দিয়ে লগইন করতে পারবেন।',
+        'সুপাবেস সংযোগ সফলভাবে সক্রিয় হয়েছে! এখন Google বা Gmail কোড (OTP) দিয়ে লগইন করতে পারবেন।',
     };
   } catch (err) {
     return {
@@ -257,10 +258,56 @@ export function getSupabaseConnectionState(): SupabaseConnectionState {
     storageBucket: SUPABASE_STORAGE_BUCKETS.PRODUCTION_PHOTOS,
     statusMessageBn: active
       ? source === 'runtime'
-        ? `সুপাবেস ক্লাউড সংযুক্ত (${url})`
-        : 'সুপাবেস ক্লাউড কনফিগারেশন সক্রিয় রয়েছে'
+        ? `কাস্টম সুপাবেস সংযুক্ত (${url})`
+        : `সুপাবেস ক্লাউড সক্রিয় (${url})`
       : 'সুপাবেস ডাটাবেস এখনও সংযুক্ত করা হয়নি (নিচে Project URL ও Key সেট করুন)',
   };
+}
+
+/**
+ * Verifies live connectivity to the configured Supabase project and checks enabled Auth providers.
+ */
+export async function testSupabaseConnection(): Promise<{
+  ok: boolean;
+  messageBn: string;
+  googleEnabled?: boolean;
+  emailEnabled?: boolean;
+}> {
+  const { url, anonKey } = resolveActiveCredentials();
+  if (!url || !anonKey) {
+    return {
+      ok: false,
+      messageBn: 'Supabase Project URL এবং Key সেট করা নেই।',
+    };
+  }
+
+  try {
+    const res = await fetch(`${url.replace(/\/+$/, '')}/auth/v1/settings`, {
+      headers: { apikey: anonKey },
+    });
+    if (!res.ok) {
+      return {
+        ok: false,
+        messageBn: `সুপাবেস সংযোগ ব্যর্থ (HTTP ${res.status})। Project URL এবং Publishable/Anon Key সঠিক কিনা যাচাই করুন।`,
+      };
+    }
+    const data = (await res.json()) as {
+      external?: { google?: boolean; email?: boolean };
+    };
+    const googleEnabled = Boolean(data.external?.google);
+    const emailEnabled = Boolean(data.external?.email);
+    return {
+      ok: true,
+      googleEnabled,
+      emailEnabled,
+      messageBn: `সংযোগ সফল (${url}) — Google Auth: ${googleEnabled ? 'চালু' : 'বন্ধ'}, Email OTP: ${emailEnabled ? 'চালু' : 'বন্ধ'}।`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      messageBn: `নেটওয়ার্ক ত্রুটি: ${err instanceof Error ? err.message : 'সুপাবেসের সাথে সংযোগ করা যায়নি'}`,
+    };
+  }
 }
 
 /**
@@ -304,7 +351,7 @@ export function getOAuthErrorFromUrl(): string | null {
 let isOAuthRedirectInFlight = false;
 
 /**
- * Initiates Google OAuth login via Supabase Auth.
+ * Initiates Google OAuth login via Supabase Auth (PKCE flow).
  */
 export async function signInWithGoogleSupabase(): Promise<{
   ok: boolean;
@@ -421,6 +468,106 @@ export async function signInWithGoogleSupabase(): Promise<{
       messageBn: `Google লগইন ত্রুটি: ${err instanceof Error ? err.message : 'অজানা ত্রুটি'}`,
     };
   }
+}
+
+/**
+ * Sends a 6-digit OTP / Magic Link to the user's email address via Supabase Auth.
+ * Using the same Gmail address signs into the exact same Supabase user_id without losing existing data.
+ */
+export async function sendEmailOtpSupabase(email: string): Promise<{
+  ok: boolean;
+  messageBn: string;
+}> {
+  if (!supabase) {
+    supabase = createSupabaseInstance();
+  }
+  if (!supabase) {
+    return {
+      ok: false,
+      messageBn: 'সুপাবেস সংযুক্ত নেই। প্রথমে Project URL ও Key সেট করুন।',
+    };
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    return {
+      ok: false,
+      messageBn: 'অনুগ্রহ করে আপনার সঠিক Gmail / ইমেইল ঠিকানা লিখুন।',
+    };
+  }
+
+  const currentOrigin =
+    typeof window !== 'undefined' ? window.location.origin : '';
+  const emailRedirectTo = currentOrigin ? `${currentOrigin}/` : undefined;
+
+  const { error } = await supabase.auth.signInWithOtp({
+    email: cleanEmail,
+    options: {
+      shouldCreateUser: true,
+      emailRedirectTo,
+    },
+  });
+
+  if (error) {
+    return {
+      ok: false,
+      messageBn: `ইমেইল লগইন কোড পাঠাতে ত্রুটি: ${error.message}`,
+    };
+  }
+
+  return {
+    ok: true,
+    messageBn: `${cleanEmail} ঠিকানায় লগইন লিংক ও কোড পাঠানো হয়েছে। আপনার Gmail ইনবক্স (বা Spam) চেক করে লিংকে ক্লিক করুন অথবা নিচে কোডটি লিখুন।`,
+  };
+}
+
+/**
+ * Verifies the 6-digit Email OTP code entered by the user.
+ */
+export async function verifyEmailOtpSupabase(
+  email: string,
+  token: string
+): Promise<{
+  ok: boolean;
+  messageBn: string;
+}> {
+  if (!supabase) {
+    supabase = createSupabaseInstance();
+  }
+  if (!supabase) {
+    return {
+      ok: false,
+      messageBn: 'সুপাবেস সংযুক্ত নেই।',
+    };
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanToken = token.trim().replace(/\s+/g, '');
+
+  if (!cleanEmail || cleanToken.length < 6) {
+    return {
+      ok: false,
+      messageBn: 'ইমেইলে প্রাপ্ত ৬ সংখ্যার কোডটি সঠিকভাবে লিখুন।',
+    };
+  }
+
+  const { error } = await supabase.auth.verifyOtp({
+    email: cleanEmail,
+    token: cleanToken,
+    type: 'email',
+  });
+
+  if (error) {
+    return {
+      ok: false,
+      messageBn: `কোড যাচাই ব্যর্থ: ${error.message}। সঠিক কোড দিন অথবা ইমেইলের সরাসরি লগইন লিংকে ক্লিক করুন।`,
+    };
+  }
+
+  return {
+    ok: true,
+    messageBn: 'সফলভাবে লগইন সম্পন্ন হয়েছে! আপনার সুপাবেস ডেটা লোড হচ্ছে...',
+  };
 }
 
 /**
